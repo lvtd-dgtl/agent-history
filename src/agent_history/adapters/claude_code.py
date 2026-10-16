@@ -94,6 +94,18 @@ class ClaudeCodeAdapter:
                     out[sid] = bridge
         return out
 
+    def transcript_files(self) -> list[Path]:
+        return self._transcript_files()
+
+    def memory_files(self) -> list[Path]:
+        return self._memory_files()
+
+    def session_bridges(self) -> dict[str, str]:
+        return self._session_bridges()
+
+    def read_memory(self, path: Path) -> Iterator[Record]:
+        return self._read_memory(path)
+
     def _memory_files(self) -> list[Path]:
         files: list[Path] = []
         for root in self.roots():
@@ -103,27 +115,46 @@ class ClaudeCodeAdapter:
     # ---------------------------------------------------------------- parsing
 
     def _read_transcript(self, path: Path) -> Iterator[Record]:
-        # Records are held until the file is read: the bridge-session line
-        # can come after messages that belong to the same session.
+        records, _end, _bridges = self.read_tail(path, 0)
+        yield from records
+
+    def read_tail(self, path: Path, offset: int = 0,
+                  bridges: dict[str, str] | None = None,
+                  ) -> tuple[list[Record], int, dict[str, str]]:
+        """Records from ``path`` starting at byte ``offset``.
+
+        Returns ``(records, end_offset, bridges)``. ``end_offset`` is the byte
+        after the last line consumed: a trailing line that is still being
+        written (no newline yet, not valid JSON) is left for the next call, so
+        a tail read never loses or splits a record. ``bridges`` is the
+        sessionId -> remote-control id map, passed back in on the next call
+        because the ``bridge-session`` line can sit in a different read than
+        the messages it labels.
+        """
         out: list[Record] = []
-        bridges = dict(getattr(self, "_bridges", {}))
+        known = dict(getattr(self, "_bridges", {}))
+        known.update(bridges or {})
         try:
-            handle = path.open(encoding="utf-8", errors="replace")
+            handle = path.open("rb")
         except OSError:
-            return
-        with handle as lines:
-            for line in lines:
-                try:
-                    entry = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(entry, dict) or entry.get("isMeta"):
+            return [], offset, known
+        end = offset
+        with handle:
+            handle.seek(offset)
+            for raw in handle:
+                complete = raw.endswith(b"\n")
+                entry = _parse_line(raw)
+                if entry is _BAD and not complete:
+                    break  # half-written last line: retry from here next time
+                end += len(raw)
+                if entry is _BAD or not isinstance(entry, dict) \
+                        or entry.get("isMeta"):
                     continue
                 role = entry.get("type")
                 if role == "bridge-session":
                     bridge = entry.get("bridgeSessionId")
                     if entry.get("sessionId") and _bridge_kind(bridge):
-                        bridges[entry["sessionId"]] = bridge
+                        known[entry["sessionId"]] = bridge
                     continue
                 if role not in ("user", "assistant"):
                     continue
@@ -142,12 +173,16 @@ class ClaudeCodeAdapter:
                         role=role,
                         text=scrub(text),
                     ))
+        # Records are held until the read ends: the bridge-session line can
+        # come after messages that belong to the same session.
+        final: list[Record] = []
         for record in out:
-            bridge = bridges.get(record.session_id)
+            bridge = known.get(record.session_id)
             if bridge:
                 record = dataclasses.replace(
                     record, aliases=((_bridge_kind(bridge), bridge),))
-            yield record
+            final.append(record)
+        return final, end, known
 
     def _read_memory(self, path: Path) -> Iterator[Record]:
         try:
@@ -166,6 +201,17 @@ class ClaudeCodeAdapter:
             role="memory",
             text=scrub(text),
         )
+
+
+_BAD = object()
+
+
+def _parse_line(raw: bytes) -> object:
+    """One transcript line as JSON, or ``_BAD`` when it is not valid."""
+    try:
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return _BAD
 
 
 def _bridge_kind(bridge_id: object) -> str | None:

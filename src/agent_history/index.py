@@ -254,7 +254,7 @@ def run(reindex: bool = False, force: bool = False) -> int:
 
 
 def _embed_pending(db, pending: list[tuple], uids: "_Uids",
-                   active: list = ()) -> int:
+                   active: list = (), stats: dict | None = None) -> int:
     """Embed and store `pending` chunks, committing as it goes. Queue-like
     sources in `active` are released only when nothing was skipped."""
     print(f"Embedding {len(pending)} new chunk(s)...")
@@ -268,6 +268,8 @@ def _embed_pending(db, pending: list[tuple], uids: "_Uids",
             failures += 1
             # A handful of transient errors is survivable; a wall of them is not.
             if failures > 20:
+                if stats is not None:
+                    stats["failures"] = failures
                 db.commit()
                 print(f"\nAborting: {exc}", file=sys.stderr)
                 return 1
@@ -301,12 +303,77 @@ def _embed_pending(db, pending: list[tuple], uids: "_Uids",
             print(f"  {position}/{len(pending)}  ({rate:.1f}/s, eta {eta:.0f}s)")
 
     db.commit()
+    if stats is not None:
+        stats["failures"] = failures
     print(f"Done in {time.time() - started:.1f}s.")
     if failures:
         print(f"({failures} chunk(s) skipped due to embed errors)", file=sys.stderr)
     else:
         _release_consumed(active)
     return 0
+
+
+# --------------------------------------------------------------- incremental
+
+class _DbSeen:
+    """``seen`` for a small slice: asks the index per hash instead of loading
+    every hash it holds (content_hash is UNIQUE, so each lookup is indexed)."""
+
+    def __init__(self, db: sqlite3.Connection) -> None:
+        self.db = db
+        self.local: set[str] = set()
+
+    def __contains__(self, digest: str) -> bool:
+        if digest in self.local:
+            return True
+        return self.db.execute(
+            "SELECT 1 FROM chunks WHERE content_hash = ?", (digest,)
+        ).fetchone() is not None
+
+    def add(self, digest: str) -> None:
+        self.local.add(digest)
+
+
+class _Slice:
+    """An adapter-shaped wrapper around records someone already read."""
+
+    mutable = False
+
+    def __init__(self, name: str, records: list) -> None:
+        self.name = name
+        self._records = records
+
+    def records(self):
+        return iter(self._records)
+
+
+def run_records(records: list, name: str = "claude-code") -> tuple[int, int]:
+    """Index just ``records`` (the new tail of a few transcripts).
+
+    The same chunking, redaction, dedup and embedding as a full ``run``, minus
+    the scan of every source. Returns ``(chunks new, embed failures)``. The
+    caller holds the index lock. Nothing is lost if this is skipped or fails:
+    a full ``index`` finds whatever is missing by content hash.
+    """
+    if not records:
+        return 0, 0
+    db, _dimension = store.open_for_write()
+    try:
+        counts: Counter[str] = Counter()
+        links: dict = {}
+        pending, _produced, _mutable = _pending(
+            _DbSeen(db), counts, [_Slice(name, records)], links)
+        uids = _Uids(db)
+        if links:
+            _link_sessions(db, links, uids)
+        if not pending:
+            return 0, 0
+        stats: dict = {}
+        code = _embed_pending(db, pending, uids, (), stats)
+        failures = stats.get("failures", 0 if code == 0 else len(pending))
+        return len(pending), failures
+    finally:
+        db.close()
 
 
 # -------------------------------------------------------------------- import
@@ -367,7 +434,7 @@ def _import_dry_run(source) -> int:
         if record.timestamp:
             first = min(first or record.timestamp, record.timestamp)
             last = max(last, record.timestamp)
-        for piece in chunk_text(record.text):
+        for piece in (record.text[a:b] for a, b in textproc.chunk_spans(record.text)):
             chunks += 1
             hashes.add(hashlib.sha256(piece.encode("utf-8")).hexdigest())
     elapsed = time.time() - started
