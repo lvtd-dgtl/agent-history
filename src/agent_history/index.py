@@ -175,17 +175,30 @@ def _link_sessions(db: sqlite3.Connection, links: dict, uids: _Uids) -> None:
             machine=record.machine or config.machine_id(),
             session_id=record.session_id, origin=record.origin,
             timestamp=record.timestamp, cwd=record.cwd)
-        if record.fork_of:
-            # Same agent and machine as the child; the parent's uid is
-            # derived the way the child's was.
-            sessions.link_fork(db, uid, sessions.uid_for(
-                db, record.agent, record.machine, record.fork_of, None))
         target = uid
         for kind, value in record.aliases:
             if kind in ("cse", "bridge"):
                 target = sessions.link_bridge(db, target, value)
             else:
                 target = sessions.link_alias(db, target, kind, value)
+    db.commit()
+
+
+def _link_forks(db: sqlite3.Connection, links: dict, uids: _Uids) -> None:
+    """Record fork relationships (child -> parent) found by adapters.
+
+    Runs both before and after embedding: a parent indexed in the same run
+    has no session row until its chunks are written, and `link_fork` can
+    only update the parent's `forks` once that row exists. (A stub row would
+    show up as a bogus empty session, so the link is applied late instead.)
+    The parent is the same agent and machine; its uid is derived the way the
+    child's was. Re-applying is a no-op.
+    """
+    for record in links.values():
+        if not record.fork_of or record.fork_of == record.session_id:
+            continue
+        sessions.link_fork(db, uids(record), sessions.uid_for(
+            db, record.agent, record.machine, record.fork_of, None))
     db.commit()
 
 
@@ -249,17 +262,18 @@ def run(reindex: bool = False, force: bool = False) -> int:
         print(f"docs refresh: removed {stale} stale chunk(s)")
     if links:
         _link_sessions(db, links, uids)
+        _link_forks(db, links, uids)
 
     if not pending:
         print("Up to date.")
         _release_consumed(active)
         return 0
 
-    return _embed_pending(db, pending, uids, active)
+    return _embed_pending(db, pending, uids, active, links)
 
 
 def _embed_pending(db, pending: list[tuple], uids: "_Uids",
-                   active: list = ()) -> int:
+                   active: list = (), links: dict | None = None) -> int:
     """Embed and store `pending` chunks, committing as it goes. Queue-like
     sources in `active` are released only when nothing was skipped."""
     print(f"Embedding {len(pending)} new chunk(s)...")
@@ -309,6 +323,8 @@ def _embed_pending(db, pending: list[tuple], uids: "_Uids",
             print(f"  {position}/{len(pending)}  ({rate:.1f}/s, eta {eta:.0f}s)")
 
     db.commit()
+    if links:
+        _link_forks(db, links, uids)  # parents written in this run now exist
     print(f"Done in {time.time() - started:.1f}s.")
     if failures:
         print(f"({failures} chunk(s) skipped due to embed errors)", file=sys.stderr)
@@ -355,10 +371,11 @@ def run_import(source, *, dry_run: bool = False) -> int:
         uids = _Uids(db)
         if links:
             _link_sessions(db, links, uids)
+            _link_forks(db, links, uids)
         if not pending:
             print("Up to date.")
             return 0
-        return _embed_pending(db, pending, uids)
+        return _embed_pending(db, pending, uids, links=links)
 
 
 def _import_dry_run(source) -> int:

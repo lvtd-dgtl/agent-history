@@ -347,3 +347,36 @@ def test_backfill_of_a_fork_whose_parent_was_never_indexed(
     (rec,) = shipped(hub)
     assert rec["text"] == "a new turn in an orphaned fork"
     assert "fork_of" not in rec
+
+
+def test_wire_labels_are_capped_redacted_and_never_self_forks(transcripts, hub):
+    from agent_history.adapters import inbox
+    transcripts("proj/p/subagents", "agent-x", [
+        msg("assistant", "subagent text for the label checks here",
+            session="p", isSidechain=True, agentId="a" * 300,
+            attributionAgent=f"type-{GH}")])
+    ship.run()
+    (rec,) = shipped(hub)
+    assert "agent_id" not in rec  # over the 200 character cap: dropped
+    assert GH not in rec["agent_type"] and "[REDACTED:github_token]" in rec["agent_type"]
+    selfish = {"v": 1, "agent": "claude-code", "origin": "/o", "session_id": "s",
+               "text": "a line forking itself", "fork_of": "s"}
+    assert inbox._parse(json.dumps(selfish), "laptop").fork_of is None
+
+
+@needs_vec
+def test_backfill_looks_up_each_fork_parent_once(transcripts, fake_embed, hub,
+                                                 monkeypatch):
+    fork = {"sessionId": "parent-1", "messageUuid": "u"}
+    transcripts("proj", "parent-1", [msg("user", "the parent session question", session="parent-1")])
+    p = transcripts("proj", "child-1", [
+        msg("user", f"fork turn number {n} in the child session", session="child-1")
+        for n in range(3)])
+    index.run()
+    p.unlink()
+    calls = []
+    real = ship._fork_parent_sid
+    monkeypatch.setattr(ship, "_fork_parent_sid",
+                        lambda db, uid: calls.append(uid) or real(db, uid))
+    ship.run(backfill=True)
+    assert len(calls) == len(set(calls))

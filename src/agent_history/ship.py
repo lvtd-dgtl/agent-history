@@ -208,14 +208,14 @@ class Batches:
             line["aliases"] = [list(pair) for pair in aliases]
         # Optional wire keys, present only when set: an old hub ignores them
         # and a line without them is still valid FORMAT 1.
-        if agent_id:
-            line["agent_id"] = agent_id
-        if agent_type:
-            line["agent_type"] = agent_type
+        # Capped and redacted like any other string that leaves the machine.
+        for key, value in (("agent_id", agent_id), ("agent_type", agent_type),
+                           ("fork_of", fork_of)):
+            label = _label(value, self.redacted)
+            if label and not (key == "fork_of" and label == session_id):
+                line[key] = label
         if sidechain:
             line["sidechain"] = True
-        if fork_of:
-            line["fork_of"] = fork_of
         for key, value in (extra or {}).items():
             if key not in line:
                 line[key] = _redact_values(value, self.redacted)
@@ -242,6 +242,14 @@ class Batches:
         self.state.queue([d for d, _ in self.pending], name)
         self.files += 1
         self.pending = []
+
+
+def _label(value: object, counter: Counter) -> str | None:
+    """An optional wire label: a non-empty string of at most 200 characters,
+    redacted; anything else is dropped."""
+    if isinstance(value, str) and 0 < len(value) <= 200:
+        return _redact_values(value, counter)
+    return None
 
 
 def _redact_values(value, counter: Counter):
@@ -407,6 +415,13 @@ def _fork_parent_sid(db, uid: str | None) -> str | None:
     return (row[0] or None) if row else None
 
 
+def _cached_parent(db, uid: str | None, cache: dict) -> str | None:
+    """`_fork_parent_sid`, once per session uid per backfill."""
+    if uid not in cache:
+        cache[uid] = _fork_parent_sid(db, uid)
+    return cache[uid]
+
+
 def _collect_index(batches: Batches, state: State) -> int | None:
     """Export chunks already in the local index, past the watermark.
 
@@ -424,6 +439,7 @@ def _collect_index(batches: Batches, state: State) -> int | None:
     last = int(state.get("backfill_id"))
     db = store.open_for_maintenance()
     links: dict[str, list] = {}
+    fork_parents: dict[str, str | None] = {}
     try:
         while True:
             rows = db.execute(
@@ -448,6 +464,6 @@ def _collect_index(batches: Batches, state: State) -> int | None:
                             aliases=links.get(uid, ()),
                             agent_id=agent_id, agent_type=agent_type,
                             sidechain=bool(sidechain),
-                            fork_of=_fork_parent_sid(db, uid))
+                            fork_of=_cached_parent(db, uid, fork_parents))
     finally:
         db.close()

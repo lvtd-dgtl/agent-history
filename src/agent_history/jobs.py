@@ -572,7 +572,11 @@ def _run_locked(dest: str | None, root: Path, final: str | None,
                     agent=record.agent, origin=record.origin,
                     session_id=record.session_id, cwd=record.cwd,
                     timestamp=record.timestamp, role=record.role,
-                    text=record.text, aliases=record.aliases, extra=extra)
+                    text=record.text, aliases=record.aliases,
+                    # No fork_of: records are re-keyed to the job id, so a
+                    # parent claude session id would link to nothing.
+                    agent_id=record.agent_id, agent_type=record.agent_type,
+                    sidechain=record.sidechain, extra=extra)
                 if final:
                     expected.add(digest)
             batches.flush()

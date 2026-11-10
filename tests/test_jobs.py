@@ -338,3 +338,17 @@ def test_wrapper_validates_and_passes_the_exit_code_through(tmp_path):
                              env={**base, "AGENT_HISTORY_ENV_FILE": str(tmp_path / "x")},
                              capture_output=True, text=True)
     assert missing.returncode == 2
+
+
+def test_job_subagent_chunks_ship_labelled(env):
+    job(env, subagent=[dict(session_line("assistant", "Side chain: checked the cookie flags.",
+                                         "2026-11-01T12:02:00.000Z"),
+                            isSidechain=True, agentId="a74d",
+                            attributionAgent="job-researcher")])
+    jobs.run()
+    lines = shipped_lines(env["landing"])
+    (side,) = [l for l in lines if l["text"].startswith("Side chain")]
+    assert (side["agent_id"], side["agent_type"], side["sidechain"]) == (
+        "a74d", "job-researcher", True)
+    main = [l for l in lines if l["origin"].endswith(f"{SID}.jsonl")]
+    assert main and not any("sidechain" in l or "agent_id" in l for l in main)

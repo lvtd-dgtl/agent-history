@@ -556,3 +556,78 @@ def test_migration_adds_subagent_columns_to_an_existing_index(fake_embed):
     assert {"agent_id", "agent_type", "sidechain"} <= columns
     (row,) = store.session_rows(db, session_id=SID)
     assert row[store.ROW_WIDTH - 3:] == (None, None, 0)
+
+
+def test_fork_and_parent_in_one_run_link_both_ways(transcripts, fake_embed):
+    """The parent's row does not exist until its chunks are written, so the
+    link must be applied after embedding, not only before."""
+    transcripts("proj", "parent", [msg("user", "the original question about caching",
+                                       session="parent")])
+    transcripts("proj", "child", [
+        msg("user", "a new direction after branching off", session="child",
+            forkedFrom={"sessionId": "parent", "messageUuid": "u"}),
+        msg("user", "and one more fresh turn on the fork", session="child")])
+    # first line of the fork is forkedFrom: skipped, so only the second remains
+    index.run()  # ONE run
+    db = store.open_for_read()
+    parent = sessions.derive_uid("claude-code", "testbox", "parent")
+    child = sessions.derive_uid("claude-code", "testbox", "child")
+    meta = lambda uid: json.loads(db.execute(
+        "SELECT meta FROM sessions WHERE uid = ?", (uid,)).fetchone()[0])
+    assert meta(child)["fork_of"] == parent
+    assert meta(parent)["forks"] == [child]
+    assert db.execute("SELECT count(*) FROM sessions").fetchone()[0] == 2
+
+
+def test_a_fork_of_itself_is_ignored(transcripts, fake_embed):
+    transcripts("proj", "s", [msg("user", "a line that claims to fork itself ok",
+                                  session="s",
+                                  forkedFrom={"sessionId": "s", "messageUuid": "u"})])
+    index.run()
+    db = store.open_for_read()
+    uid = sessions.derive_uid("claude-code", "testbox", "s")
+    assert "fork_of" not in json.loads(db.execute(
+        "SELECT meta FROM sessions WHERE uid = ?", (uid,)).fetchone()[0])
+    assert db.execute("SELECT count(*) FROM chunks").fetchone()[0] == 1  # text kept
+
+
+def test_relabel_previews_then_fills_old_subagent_chunks(transcripts, fake_embed,
+                                                         capsys):
+    from agent_history import relabel
+    path = transcripts("proj/par/subagents", "agent-a74d", [
+        msg("assistant", "subagent reports the flaky migration is fixed",
+            session="par", isSidechain=True, agentId="a74d",
+            attributionAgent="job-researcher")])
+    transcripts("proj", "par", [msg("assistant", "main agent says migration ok",
+                                    session="par")])
+    index.run()
+    db = store.open_for_write()[0]
+    db.execute("UPDATE chunks SET agent_id = NULL, agent_type = NULL, "
+               "sidechain = NULL")  # as indexed by an older version
+    db.commit()
+    db.close()
+
+    assert relabel.run() == 0  # preview
+    assert "would relabel 1 chunk(s) in 1 subagent transcript(s)" in capsys.readouterr().out
+    db = store.open_for_read()
+    assert db.execute("SELECT count(*) FROM chunks WHERE agent_id IS NOT NULL"
+                      ).fetchone()[0] == 0
+
+    assert relabel.run(apply=True) == 0
+    assert "relabelled 1 chunk(s)" in capsys.readouterr().out
+    rows = dict(((t, (a, ty, s)) for t, a, ty, s in store.open_for_read().execute(
+        "SELECT text, agent_id, agent_type, sidechain FROM chunks")))
+    assert rows["subagent reports the flaky migration is fixed"] == (
+        "a74d", "job-researcher", 1)
+    assert rows["main agent says migration ok"] == (None, None, None)
+    # without the transcript the id is still derived; the type stays unknown
+    path.unlink()
+    db = store.open_for_write()[0]
+    db.execute("UPDATE chunks SET agent_id = NULL, agent_type = NULL, sidechain = NULL")
+    db.commit()
+    db.close()
+    relabel.run(apply=True)
+    row = store.open_for_read().execute(
+        "SELECT agent_id, agent_type, sidechain FROM chunks WHERE origin LIKE '%agent-a74d%'"
+    ).fetchone()
+    assert row == ("a74d", None, 1)

@@ -11,7 +11,7 @@ from . import (__version__, adapters, config, embed, index, inject, scrub,
 
 COMMANDS = {"index", "reindex", "reembed", "search", "sources", "doctor",
             "datadir", "trigger", "show", "serve", "inject", "docs",
-            "purge", "strict", "scrub", "ship", "ship-jobs", "confirm-indexed",
+            "purge", "strict", "scrub", "relabel", "ship", "ship-jobs", "confirm-indexed",
             "boat-export",
             "serve-ssh", "mcp", "import", "notes"}
 
@@ -49,6 +49,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "scrub", help="redact secrets already stored in the index")
     scr.add_argument("--yes", action="store_true",
                      help="rewrite the affected chunks; without it, only previews")
+
+    rel = sub.add_parser(
+        "relabel", help="label existing subagent chunks in the local index "
+                        "(preview unless --apply)")
+    rel.add_argument("--apply", action="store_true",
+                     help="write the labels; without it, only previews")
 
     imp = sub.add_parser(
         "import",
@@ -737,6 +743,9 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             return _cmd_strict(args.action)
         if args.command == "scrub":
             return scrub.run(yes=args.yes)
+        if args.command == "relabel":
+            from . import relabel
+            return relabel.run(apply=args.apply)
 
         if args.command == "import":
             return _cmd_import(args.kind, args.path, dry_run=args.dry_run)

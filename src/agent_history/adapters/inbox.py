@@ -178,6 +178,9 @@ def _parse(line: str, machine: str) -> Record | None:
     # Session identity is optional: older shippers send neither field, and
     # the indexer derives the uid itself.
     uid = data.get("session_uid")
+    fork_of = _short(data.get("fork_of"))
+    if fork_of == field("session_id"):
+        fork_of = None  # a session cannot be a fork of itself
     return Record(
         agent=field("agent") or "unknown",
         origin=field("origin"),
@@ -192,7 +195,7 @@ def _parse(line: str, machine: str) -> Record | None:
         agent_id=_short(data.get("agent_id")),
         agent_type=_short(data.get("agent_type")),
         sidechain=data.get("sidechain") is True,
-        fork_of=_short(data.get("fork_of")),
+        fork_of=fork_of,
     )
 
 

@@ -134,6 +134,9 @@ class ClaudeCodeAdapter:
                 if role not in ("user", "assistant"):
                     continue
                 forked = entry.get("forkedFrom")
+                if (isinstance(forked, dict) and forked.get("sessionId")
+                        and forked.get("sessionId") == entry.get("sessionId")):
+                    forked = None  # a self-reference is not a fork
                 if forked:
                     # Copied from the parent at the fork point: those lines
                     # belong to the parent session, not to this new one.

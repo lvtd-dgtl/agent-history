@@ -21,6 +21,17 @@ they have no corresponding tags.
   forked session copied from its parent (`forkedFrom`) are no longer indexed
   under the fork; the fork is linked to its parent in session metadata
   (`fork_of` / `forks`) instead.
+  A fork with no new turns yet has no chunks of its own, so no link is
+  recorded until its first new turn is indexed (a link would need an empty
+  session row that listings would show). `ship-jobs` ships the subagent
+  labels too. The labels on the wire are capped at 200 characters and redacted.
+- **`agent-history relabel [--apply]`**: fills `agent_id` and `sidechain` on
+  subagent chunks indexed before labels existed, from the
+  `.../subagents/agent-<id>.jsonl` origin, and `agent_type` when that file
+  still exists. Preview by default; local index only. A hub keeps the
+  unlabelled copies of chunks it already received (shipping dedups by content
+  hash); to label them, clear the hub's copy of the affected sessions
+  (`purge`) and reship them from a machine that still has the transcripts.
 - **`agent-history ship-jobs`**: ships `claude -p` job transcripts (Claude
   Code session files and the stream-json `transcript.jsonl`) from
   `AGENT_HISTORY_JOBS_DIR`, tagged with the job id, owning Duet channel and
