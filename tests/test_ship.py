@@ -305,3 +305,45 @@ def test_a_v1_line_without_the_new_fields_still_parses():
     assert rec.text == "plain old line"
     assert (rec.agent_id, rec.agent_type, rec.sidechain, rec.fork_of) == (
         None, None, False, None)
+
+
+@needs_vec
+def test_backfill_carries_fork_of_from_the_index(transcripts, fake_embed, hub):
+    fork = {"sessionId": "parent-1", "messageUuid": "u"}
+    paths = [
+        transcripts("proj", "parent-1", [
+            msg("user", "the parent session question about caching",
+                session="parent-1")]),
+        transcripts("proj", "child-1", [
+            msg("user", "the parent session question about caching",
+                session="child-1", forkedFrom=fork),
+            msg("user", "a new turn in the forked session", session="child-1")]),
+        transcripts("proj", "plain-1", [
+            msg("user", "an unrelated standalone session message", session="plain-1")]),
+    ]
+    index.run()
+    for p in paths:  # only the index remains, so the backfill must supply it
+        p.unlink()
+    ship.run(backfill=True)
+    by_text = {r["text"]: r for r in shipped(hub)}
+    assert by_text["a new turn in the forked session"]["fork_of"] == "parent-1"
+    assert "fork_of" not in by_text["an unrelated standalone session message"]
+    assert "fork_of" not in by_text["the parent session question about caching"]
+
+
+@needs_vec
+def test_backfill_of_a_fork_whose_parent_was_never_indexed(
+        transcripts, fake_embed, hub):
+    # The parent's row is absent, so its source id is unknown to the index.
+    # Chosen behaviour: ship the chunk without fork_of rather than guess.
+    fork = {"sessionId": "ghost-parent", "messageUuid": "u"}
+    p = transcripts("proj", "orphan-1", [
+        msg("user", "copied from a parent we never saw", session="orphan-1",
+            forkedFrom=fork),
+        msg("user", "a new turn in an orphaned fork", session="orphan-1")])
+    index.run()
+    p.unlink()
+    assert ship.run(backfill=True) == 0
+    (rec,) = shipped(hub)
+    assert rec["text"] == "a new turn in an orphaned fork"
+    assert "fork_of" not in rec
