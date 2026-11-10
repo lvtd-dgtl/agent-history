@@ -12,6 +12,12 @@ they have no corresponding tags.
 ## [Unreleased]
 
 ### Added
+- **Desktop side chats are searchable**: `hooks/side_chat_capture.py` (installed
+  as a managed-settings hook, see `deploy/side-chats/README.md`) records
+  `--no-session-persistence` side chats to `~/.claude/side-chats/`, and the new
+  `claude-code-side` adapter indexes them, linked to the parent Claude Code
+  session as a fork. New `AGENT_HISTORY_SIDE_CHAT_DIRS`. See
+  `docs/design/side-chat-capture.md`.
 - **Subagent labels and fork handling (Claude Code)**: subagent transcripts
   (`<session>/subagents/agent-<id>.jsonl`) still index under the parent
   session, but their chunks now carry `agent_id`, `agent_type` and `sidechain`

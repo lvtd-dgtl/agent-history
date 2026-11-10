@@ -75,6 +75,7 @@ def all_adapters() -> list[Adapter]:
     from .inbox import InboxAdapter
     from .openclaw import OpenClawAdapter
     from .opencode import OpenCodeAdapter
+    from .side_chat import SideChatAdapter
 
     # The hub indexes what machines ship it and nothing local: whatever
     # transcripts happen to sit on that box are not its history.
@@ -83,6 +84,7 @@ def all_adapters() -> list[Adapter]:
     return [
         ClaudeCodeAdapter(),
         CodexAdapter(),
+        SideChatAdapter(),
         OpenCodeAdapter(),
         HermesAdapter(),
         OpenClawAdapter(),
