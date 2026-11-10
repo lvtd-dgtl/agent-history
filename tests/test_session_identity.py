@@ -494,3 +494,65 @@ def test_hub_ignores_a_uid_claimed_from_another_machine(inbox, fake_embed):
     assert uids_of(db, machine="laptop") == {
         sessions.derive_uid("claude-code", "laptop", SID)}
     assert uids_of(db, machine="server") == {victim}
+
+
+# ------------------------------------------------- subagent labels and forks
+
+def test_fork_is_linked_and_copied_lines_stay_with_the_parent(transcripts,
+                                                               fake_embed):
+    transcripts("proj", "parent", [msg("user", "the original question about caching",
+                                       session="parent")])
+    fork = {"sessionId": "parent", "messageUuid": "u"}
+    transcripts("proj", "child", [
+        msg("user", "the original question about caching", session="child",
+            forkedFrom=fork),
+        msg("user", "a new direction after branching off", session="child"),
+    ])
+    index.run()
+    index.run()  # re-linking is idempotent
+    db = store.open_for_read()
+    parent = sessions.derive_uid("claude-code", "testbox", "parent")
+    child = sessions.derive_uid("claude-code", "testbox", "child")
+
+    def meta(uid):
+        return json.loads(db.execute("SELECT meta FROM sessions WHERE uid = ?",
+                                     (uid,)).fetchone()[0])
+    assert meta(child)["fork_of"] == parent
+    assert meta(parent)["forks"] == [child]
+    texts = {r[0]: r[1] for r in db.execute(
+        "SELECT text, session_id FROM chunks")}
+    assert texts["the original question about caching"] == "parent"
+    assert texts["a new direction after branching off"] == "child"
+
+
+def test_subagent_chunks_are_labelled_in_search_show_and_mcp_rows(
+        transcripts, fake_embed, capsys):
+    transcripts("proj/par/subagents", "agent-a74d", [
+        msg("assistant", "subagent reports the flaky migration is fixed",
+            session="par", isSidechain=True, agentId="a74d",
+            attributionAgent="job-researcher")])
+    transcripts("proj", "par", [msg("assistant", "main agent says the migration ok",
+                                    session="par")])
+    index.run()
+    hits = {h["text"]: h for h in search.search_rows("migration", mode="text")}
+    sub = hits["subagent reports the flaky migration is fixed"]
+    assert (sub["sidechain"], sub["agent_id"], sub["agent_type"]) == (
+        True, "a74d", "job-researcher")
+    assert hits["main agent says the migration ok"]["sidechain"] is False
+    assert search.sub_label(sub) == " [sub:job-researcher a74d]"
+    assert search.sub_label(hits["main agent says the migration ok"]) == ""
+    search._print_row(1, sub, False)
+    assert "claude-code/assistant [sub:job-researcher a74d]" in capsys.readouterr().out
+    assert show.run("par") == 0
+    out = capsys.readouterr().out
+    assert "assistant [sub:job-researcher a74d]:" in out
+    assert "assistant:" in out  # the main-session chunk has no prefix
+
+
+def test_migration_adds_subagent_columns_to_an_existing_index(fake_embed):
+    build_old_index(OLD_ROWS[:1])
+    db = store.open_for_read()
+    columns = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
+    assert {"agent_id", "agent_type", "sidechain"} <= columns
+    (row,) = store.session_rows(db, session_id=SID)
+    assert row[store.ROW_WIDTH - 3:] == (None, None, 0)

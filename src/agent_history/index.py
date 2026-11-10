@@ -117,7 +117,7 @@ def _pending(
             # would compound into a memories-about-memories feedback loop.
             if textproc.is_injection(record.text):
                 continue
-            if links is not None and record.aliases:
+            if links is not None and (record.aliases or record.fork_of):
                 links.setdefault(_session_key(record), record)
             rid = None
             for ordinal, (start, end, piece) in enumerate(
@@ -175,6 +175,11 @@ def _link_sessions(db: sqlite3.Connection, links: dict, uids: _Uids) -> None:
             machine=record.machine or config.machine_id(),
             session_id=record.session_id, origin=record.origin,
             timestamp=record.timestamp, cwd=record.cwd)
+        if record.fork_of:
+            # Same agent and machine as the child; the parent's uid is
+            # derived the way the child's was.
+            sessions.link_fork(db, uid, sessions.uid_for(
+                db, record.agent, record.machine, record.fork_of, None))
         target = uid
         for kind, value in record.aliases:
             if kind in ("cse", "bridge"):
@@ -291,6 +296,9 @@ def _embed_pending(db, pending: list[tuple], uids: "_Uids",
             chunk_ordinal=where[1],
             char_start=where[2],
             char_end=where[3],
+            agent_id=record.agent_id,
+            agent_type=record.agent_type,
+            sidechain=record.sidechain,
         )
 
         if position % COMMIT_EVERY == 0:

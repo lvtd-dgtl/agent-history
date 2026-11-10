@@ -178,6 +178,10 @@ class Batches:
             timestamp: str, role: str, text: str,
             session_uid: str | None = None,
             aliases: tuple | list = (),
+            agent_id: str | None = None,
+            agent_type: str | None = None,
+            sidechain: bool = False,
+            fork_of: str | None = None,
             extra: dict | None = None) -> str:
         """Queue one record (redacted here) and return its hash, whether it
         was new or already sent. ``extra`` adds fields to the wire line (a
@@ -202,6 +206,16 @@ class Batches:
         }
         if aliases:
             line["aliases"] = [list(pair) for pair in aliases]
+        # Optional wire keys, present only when set: an old hub ignores them
+        # and a line without them is still valid FORMAT 1.
+        if agent_id:
+            line["agent_id"] = agent_id
+        if agent_type:
+            line["agent_type"] = agent_type
+        if sidechain:
+            line["sidechain"] = True
+        if fork_of:
+            line["fork_of"] = fork_of
         for key, value in (extra or {}).items():
             if key not in line:
                 line[key] = _redact_values(value, self.redacted)
@@ -371,7 +385,26 @@ def _collect(batches: Batches) -> None:
             batches.add(agent=record.agent, origin=record.origin,
                         session_id=record.session_id, cwd=record.cwd,
                         timestamp=record.timestamp, role=record.role,
-                        text=record.text, aliases=record.aliases)
+                        text=record.text, aliases=record.aliases,
+                        agent_id=record.agent_id, agent_type=record.agent_type,
+                        sidechain=record.sidechain, fork_of=record.fork_of)
+
+
+def _fork_parent_sid(db, uid: str | None) -> str | None:
+    """Source session id of the session ``uid`` was forked from, if known."""
+    if not uid:
+        return None
+    try:
+        meta = db.execute("SELECT meta FROM sessions WHERE uid = ?",
+                          (uid,)).fetchone()
+        parent = json.loads(meta[0] or "{}").get("fork_of") if meta else None
+        if not parent:
+            return None
+        row = db.execute("SELECT source_session_id FROM sessions WHERE uid = ?",
+                         (parent,)).fetchone()
+    except (sqlite3.Error, ValueError):
+        return None
+    return (row[0] or None) if row else None
 
 
 def _collect_index(batches: Batches, state: State) -> int | None:
@@ -395,13 +428,14 @@ def _collect_index(batches: Batches, state: State) -> int | None:
         while True:
             rows = db.execute(
                 "SELECT id, agent, origin, session_id, cwd, timestamp, role, "
-                "text, machine, session_uid FROM chunks WHERE id > ? "
+                "text, machine, session_uid, agent_id, agent_type, sidechain "
+                "FROM chunks WHERE id > ? "
                 "ORDER BY id LIMIT ?",
                 (last, BACKFILL_PAGE)).fetchall()
             if not rows:
                 return last
             for (rowid, agent, origin, session_id, cwd, timestamp, role,
-                 text, machine, uid) in rows:
+                 text, machine, uid, agent_id, agent_type, sidechain) in rows:
                 last = rowid
                 if machine not in (None, local) or not text:
                     continue
@@ -411,6 +445,9 @@ def _collect_index(batches: Batches, state: State) -> int | None:
                             session_id=session_id or "", cwd=cwd or "",
                             timestamp=timestamp or "", role=role or "",
                             text=text, session_uid=uid,
-                            aliases=links.get(uid, ()))
+                            aliases=links.get(uid, ()),
+                            agent_id=agent_id, agent_type=agent_type,
+                            sidechain=bool(sidechain),
+                            fork_of=_fork_parent_sid(db, uid))
     finally:
         db.close()

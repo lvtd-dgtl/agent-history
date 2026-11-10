@@ -98,6 +98,9 @@ _ADDED_COLUMNS = (
     ("chunk_ordinal", "INTEGER"),
     ("char_start", "INTEGER"),
     ("char_end", "INTEGER"),
+    ("agent_id", "TEXT"),
+    ("agent_type", "TEXT"),
+    ("sidechain", "INTEGER"),
 )
 
 
@@ -155,7 +158,11 @@ def open_for_write() -> tuple[sqlite3.Connection, int]:
             record_id     TEXT,
             chunk_ordinal INTEGER,
             char_start    INTEGER,
-            char_end      INTEGER
+            char_end      INTEGER,
+            -- Claude Code subagent chunks: which subagent, and its type
+            agent_id      TEXT,
+            agent_type    TEXT,
+            sidechain     INTEGER
         );
         CREATE INDEX IF NOT EXISTS idx_chunks_origin ON chunks(origin);
         CREATE INDEX IF NOT EXISTS idx_chunks_agent  ON chunks(agent);
@@ -366,6 +373,9 @@ def insert_chunk(
     chunk_ordinal: int | None = None,
     char_start: int | None = None,
     char_end: int | None = None,
+    agent_id: str | None = None,
+    agent_type: str | None = None,
+    sidechain: bool = False,
 ) -> None:
     """Store one embedded chunk and register its session.
 
@@ -378,10 +388,12 @@ def insert_chunk(
     cursor = db.execute(
         "INSERT INTO chunks "
         "(agent, origin, session_id, cwd, timestamp, role, text, content_hash, "
-        "machine, session_uid, record_id, chunk_ordinal, char_start, char_end) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "machine, session_uid, record_id, chunk_ordinal, char_start, char_end, "
+        "agent_id, agent_type, sidechain) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (agent, origin, session_id, cwd, timestamp, role, text, content_hash,
-         machine, uid, record_id, chunk_ordinal, char_start, char_end),
+         machine, uid, record_id, chunk_ordinal, char_start, char_end,
+         agent_id, agent_type, 1 if sidechain else None),
     )
     sessions.register_session(db, uid, agent=agent, machine=machine,
                               session_id=session_id, origin=origin,
@@ -426,13 +438,15 @@ def query(
                    exclude_machine=exclude_machine)[:k]
 
 
-# The last column is the chunk's session uid, already canonicalised: a uid
-# merged into another one reports the survivor.
+# Column 9 is the chunk's session uid, already canonicalised: a uid merged
+# into another one reports the survivor. The last three describe a subagent
+# chunk (agent_id, agent_type, sidechain) and are NULL on every other row.
 _ROW_COLS = ("c.agent, c.origin, c.session_id, c.cwd, c.timestamp, c.role, "
              "c.text, c.machine, "
              "coalesce((SELECT a.session_uid FROM session_aliases a "
-             "WHERE a.kind = 'uid' AND a.value = c.session_uid), c.session_uid)")
-ROW_WIDTH = 9  # columns in _ROW_COLS; a ranking value, if any, follows
+             "WHERE a.kind = 'uid' AND a.value = c.session_uid), c.session_uid), "
+             "c.agent_id, c.agent_type, coalesce(c.sidechain, 0)")
+ROW_WIDTH = 12  # columns in _ROW_COLS; a ranking value, if any, follows
 _VEC_K_MAX = 4096  # sqlite-vec's cap on k
 
 

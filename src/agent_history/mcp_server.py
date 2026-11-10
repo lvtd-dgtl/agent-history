@@ -245,6 +245,9 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             "score": row.get("score"),
             "distance": row.get("distance"),
             "excerpt": _clip(row.get("text") or "", EXCERPT_CHARS),
+            **({"sidechain": True, "agent_id": row.get("agent_id"),
+                "agent_type": row.get("agent_type")}
+               if row.get("sidechain") or row.get("agent_id") else {}),
             **extra,
         })
     if notes == "exclude":

@@ -36,6 +36,14 @@ class Record:
     # (kind, value) links to the session's other ids, found on hard
     # evidence by the adapter, e.g. ("cse", "cse_01…") for remote control.
     aliases: tuple[tuple[str, str], ...] = ()
+    # Claude Code subagent transcripts: the subagent's id and type, and
+    # whether the message came from a sidechain. They share the parent's
+    # session id; these fields keep them tellable apart.
+    agent_id: str | None = None
+    agent_type: str | None = None
+    sidechain: bool = False
+    # The session this one was forked from (its source session id).
+    fork_of: str | None = None
 
 
 @runtime_checkable

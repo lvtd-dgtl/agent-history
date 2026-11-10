@@ -237,7 +237,7 @@ _HUB_DEFAULTS = {"agent": "?", "file": "", "session_id": "",
 
 def _as_dict(row: tuple) -> dict:
     (agent, origin, session_id, cwd, timestamp, role, text, machine,
-     session_uid, distance, score) = row
+     session_uid, agent_id, agent_type, sidechain, distance, score) = row
     return {
         "agent": agent,
         "file": origin,
@@ -248,6 +248,9 @@ def _as_dict(row: tuple) -> dict:
         "role": role,
         "text": text,
         "machine": machine or config.machine_id(),
+        "agent_id": agent_id,
+        "agent_type": agent_type,
+        "sidechain": bool(sidechain),
         "distance": distance,
         "score": score,
     }
@@ -257,6 +260,16 @@ def _trim(result: dict, full: bool) -> dict:
     if not full:
         result["text"] = result["text"][:JSON_PREVIEW_CHARS]
     return result
+
+
+def sub_label(row: dict) -> str:
+    """` [sub:<type> <last 4 of id>]` for a subagent chunk, else empty."""
+    if not row.get("sidechain") and not row.get("agent_id"):
+        return ""
+    parts = [f"sub:{row['agent_type']}" if row.get("agent_type") else "sub"]
+    if row.get("agent_id"):
+        parts.append(str(row["agent_id"])[-4:])
+    return " [" + " ".join(parts) + "]"
 
 
 def _print_row(position: int, result: dict, full: bool,
@@ -275,7 +288,8 @@ def _print_row(position: int, result: dict, full: bool,
         where += f"  [{result['tenant']}]"
     print(
         f"#{position}  {ranking}  {timestamp}  "
-        f"{result['agent']}/{result['role']}  {result['cwd'] or '?'}{where}"
+        f"{result['agent']}/{result['role']}{sub_label(result)}  "
+        f"{result['cwd'] or '?'}{where}"
     )
     print(f"    file: {result['file']}")
     text = result["text"]

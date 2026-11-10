@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import sys
 
-from . import config, remote, sessions, store
+from . import config, remote, search, sessions, store
 
 PER_CHUNK_CHARS = 2000
 
@@ -57,9 +57,12 @@ def rows_for(target: str, *, around: str | None = None,
             "role": role,
             "text": text,
             "machine": machine or config.machine_id(),
+            "agent_id": agent_id,
+            "agent_type": agent_type,
+            "sidechain": bool(sidechain),
         }
         for (agent, origin, session_id, cwd, timestamp, role, text,
-             machine, session_uid) in rows
+             machine, session_uid, agent_id, agent_type, sidechain) in rows
     ]
 
 
@@ -112,7 +115,7 @@ def render(target: str, rows: list[dict], *, as_json: bool,
     print()
     for row in rows:
         stamp = (row["timestamp"] or "")[:19]
-        print(f"[{stamp}] {row['role']}:")
+        print(f"[{stamp}] {row['role']}{search.sub_label(row)}:")
         for line in row["text"][:PER_CHUNK_CHARS].splitlines():
             print(f"  {line}")
         if len(row["text"]) > PER_CHUNK_CHARS:

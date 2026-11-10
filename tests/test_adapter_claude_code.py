@@ -118,3 +118,46 @@ def test_available_is_false_without_any_roots(monkeypatch, tmp_path):
 def test_base64_payloads_are_scrubbed_before_indexing(transcripts):
     transcripts("proj", "s", [msg("user", "here is the file: " + "A1b2C3d4" * 60)])
     assert "[blob]" in records()[0].text
+
+
+# ------------------------------------------------- subagents and forked sessions
+
+def test_subagent_file_records_are_labelled(transcripts):
+    transcripts("proj/parent-1/subagents", "agent-a74d1234", [
+        msg("assistant", "the subagent found three candidate files",
+            session="parent-1", isSidechain=True, agentId="a74d1234",
+            attributionAgent="job-researcher"),
+    ])
+    (rec,) = records()
+    assert rec.session_id == "parent-1"  # still the parent's id on the wire
+    assert (rec.sidechain, rec.agent_id, rec.agent_type) == (
+        True, "a74d1234", "job-researcher")
+
+
+def test_subagent_id_falls_back_to_the_file_name(transcripts):
+    transcripts("proj/parent-1/subagents", "agent-bee99", [
+        msg("user", "a task handed to a subagent without ids", session="parent-1"),
+    ])
+    (rec,) = records()
+    assert (rec.sidechain, rec.agent_id, rec.agent_type) == (True, "bee99", None)
+
+
+def test_main_session_records_are_not_marked(transcripts):
+    transcripts("proj", "s", [msg("user", "an ordinary top-level message")])
+    (rec,) = records()
+    assert (rec.sidechain, rec.agent_id, rec.agent_type, rec.fork_of) == (
+        False, None, None, None)
+
+
+def test_forked_lines_are_skipped_and_the_rest_carry_fork_of(transcripts):
+    fork = {"sessionId": "parent-1", "messageUuid": "u-1"}
+    transcripts("proj", "child-1", [
+        msg("user", "copied from the parent at the fork point",
+            session="child-1", forkedFrom=fork),
+        msg("assistant", "also copied from the parent transcript",
+            session="child-1", forkedFrom=fork),
+        msg("user", "a genuinely new turn after the fork", session="child-1"),
+    ])
+    (rec,) = records()
+    assert rec.text == "a genuinely new turn after the fork"
+    assert rec.session_id == "child-1" and rec.fork_of == "parent-1"

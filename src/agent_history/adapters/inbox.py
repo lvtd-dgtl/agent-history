@@ -189,7 +189,18 @@ def _parse(line: str, machine: str) -> Record | None:
         machine=machine,
         session_uid=uid if sessions.valid_uid(uid) else None,
         aliases=_aliases(data.get("aliases")),
+        agent_id=_short(data.get("agent_id")),
+        agent_type=_short(data.get("agent_type")),
+        sidechain=data.get("sidechain") is True,
+        fork_of=_short(data.get("fork_of")),
     )
+
+
+def _short(value: object) -> str | None:
+    """An optional label field: a non-empty string of sane length, or None."""
+    if isinstance(value, str) and 0 < len(value) <= 200:
+        return value
+    return None
 
 
 def _aliases(raw: object) -> tuple[tuple[str, str], ...]:

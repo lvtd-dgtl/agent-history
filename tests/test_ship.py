@@ -268,3 +268,40 @@ def test_trigger_ships_after_indexing(transcripts, fake_embed, hub):
     transcripts("proj", "s", [msg("user", "a message worth shipping to the hub")])
     assert trigger.run("hook", foreground=True) == 0
     assert len(shipped(hub)) == 1
+
+
+def test_subagent_and_fork_fields_ride_the_wire_and_survive_the_inbox(
+        transcripts, hub):
+    from agent_history.adapters import inbox
+    fork = {"sessionId": "parent-1", "messageUuid": "u"}
+    transcripts("proj/parent-1/subagents", "agent-a74d", [
+        msg("assistant", "subagent output that should be labelled",
+            session="parent-1", isSidechain=True, agentId="a74d",
+            attributionAgent="job-researcher")])
+    transcripts("proj", "child-1", [
+        msg("user", "copied line from the parent session", session="child-1",
+            forkedFrom=fork),
+        msg("user", "a new turn in the forked session", session="child-1")])
+    assert ship.run() == 0
+    by_text = {r["text"]: r for r in shipped(hub)}
+    assert len(by_text) == 2  # the copied fork line was not shipped
+    sub = by_text["subagent output that should be labelled"]
+    assert (sub["agent_id"], sub["agent_type"], sub["sidechain"]) == (
+        "a74d", "job-researcher", True)
+    new = by_text["a new turn in the forked session"]
+    assert new["fork_of"] == "parent-1"
+    assert not {"agent_id", "agent_type", "sidechain"} & new.keys()
+    parsed = inbox._parse(json.dumps(sub), "laptop")
+    assert (parsed.agent_id, parsed.agent_type, parsed.sidechain) == (
+        "a74d", "job-researcher", True)
+    assert inbox._parse(json.dumps(new), "laptop").fork_of == "parent-1"
+
+
+def test_a_v1_line_without_the_new_fields_still_parses():
+    from agent_history.adapters import inbox
+    old = {"v": 1, "agent": "claude-code", "origin": "/o", "session_id": "s",
+           "cwd": "/w", "timestamp": "t", "role": "user", "text": "plain old line"}
+    rec = inbox._parse(json.dumps(old), "laptop")
+    assert rec.text == "plain old line"
+    assert (rec.agent_id, rec.agent_type, rec.sidechain, rec.fork_of) == (
+        None, None, False, None)

@@ -111,6 +111,12 @@ class ClaudeCodeAdapter:
             handle = path.open(encoding="utf-8", errors="replace")
         except OSError:
             return
+        # <proj>/<session>/subagents/agent-<id>.jsonl
+        in_subagents = path.parent.name == "subagents"
+        file_agent_id = (path.stem[len("agent-"):]
+                         if in_subagents and path.stem.startswith("agent-")
+                         else None)
+        fork_parents: list[str] = []
         with handle as lines:
             for line in lines:
                 try:
@@ -127,6 +133,20 @@ class ClaudeCodeAdapter:
                     continue
                 if role not in ("user", "assistant"):
                     continue
+                forked = entry.get("forkedFrom")
+                if forked:
+                    # Copied from the parent at the fork point: those lines
+                    # belong to the parent session, not to this new one.
+                    parent = (forked.get("sessionId")
+                              if isinstance(forked, dict) else None)
+                    if parent and parent not in fork_parents:
+                        fork_parents.append(parent)
+                    continue
+                sidechain = bool(entry.get("isSidechain")) or in_subagents
+                agent_id = (entry.get("agentId") or file_agent_id
+                            if sidechain else None)
+                agent_type = (entry.get("attributionAgent") or None
+                              if sidechain else None)
                 for text in _texts(entry.get("message") or {}):
                     text = text.strip()
                     if len(text) < MIN_CHARS:
@@ -141,8 +161,14 @@ class ClaudeCodeAdapter:
                         timestamp=entry.get("timestamp", ""),
                         role=role,
                         text=scrub(text),
+                        agent_id=agent_id,
+                        agent_type=agent_type,
+                        sidechain=sidechain,
                     ))
+        fork_of = fork_parents[0] if fork_parents else None
         for record in out:
+            if fork_of:
+                record = dataclasses.replace(record, fork_of=fork_of)
             bridge = bridges.get(record.session_id)
             if bridge:
                 record = dataclasses.replace(

@@ -12,6 +12,15 @@ they have no corresponding tags.
 ## [Unreleased]
 
 ### Added
+- **Subagent labels and fork handling (Claude Code)**: subagent transcripts
+  (`<session>/subagents/agent-<id>.jsonl`) still index under the parent
+  session, but their chunks now carry `agent_id`, `agent_type` and `sidechain`
+  (new nullable columns, added in place). Search shows `[sub:job-researcher
+  a74d]` after the role, `show` prefixes the same label, and MCP results
+  include the fields. They ship as optional wire keys (format stays 1). Lines a
+  forked session copied from its parent (`forkedFrom`) are no longer indexed
+  under the fork; the fork is linked to its parent in session metadata
+  (`fork_of` / `forks`) instead.
 - **`agent-history ship-jobs`**: ships `claude -p` job transcripts (Claude
   Code session files and the stream-json `transcript.jsonl`) from
   `AGENT_HISTORY_JOBS_DIR`, tagged with the job id, owning Duet channel and
