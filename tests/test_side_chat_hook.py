@@ -33,7 +33,7 @@ def fake_proc(chain: dict[int, tuple[int, list[str]]]):
 def chain(resume_args):
     return fake_proc({
         50: (40, ["/bin/sh", "-c", "python3 -I hook.py"]),
-        40: (30, ["claude", "-p", "--fork-session", *resume_args]),
+        40: (30, ["claude", "-p", "--fork-session", "--no-session-persistence", *resume_args]),
         30: (1, ["bash"]),
     })
 
@@ -43,10 +43,35 @@ def test_parent_from_both_resume_forms(args):
     assert hook.parent_session_id(chain(args), pid=50) == PARENT
 
 
+def test_launch_signature_needs_both_flags():
+    only_nsp = fake_proc({50: (1, ["claude", "-p", "--no-session-persistence",
+                                   "--resume", PARENT])})
+    assert hook.side_chat_launch(only_nsp, pid=50) == (False, None)
+    only_fork = fake_proc({50: (1, ["claude", "--fork-session", "--resume", PARENT])})
+    assert hook.side_chat_launch(only_fork, pid=50) == (False, None)
+    assert hook.side_chat_launch(chain(["--resume", PARENT]), pid=50) == (True, PARENT)
+
+
+def test_side_chat_without_resume_is_captured_unlinked(tmp_path):
+    read = fake_proc({50: (1, ["claude", "--fork-session", "--no-session-persistence"])})
+    assert run(tmp_path, event(tmp_path), read=read)
+    assert lines(tmp_path)[0]["parent_session_id"] is None
+
+
+def test_new_normal_session_first_prompt_is_not_captured(tmp_path):
+    # transcript not yet written, but no side-chat flags on the claude process
+    normal = fake_proc({50: (40, ["/bin/sh", "-c", "hook"]),
+                        40: (1, ["claude", "--model", "opus"])})
+    assert not run(tmp_path, event(tmp_path, "UserPromptSubmit"), read=normal)
+    nsp = fake_proc({50: (1, ["claude", "-p", "--no-session-persistence"])})
+    assert not run(tmp_path, event(tmp_path, "UserPromptSubmit"), read=nsp)
+    assert not (tmp_path / ".claude").exists()
+
+
 def test_no_fork_flag_or_no_resume_means_no_parent():
     plain = fake_proc({50: (40, ["sh"]), 40: (1, ["claude", "-p", "--resume", PARENT])})
     assert hook.parent_session_id(plain, pid=50) is None
-    noresume = fake_proc({50: (1, ["claude", "--fork-session"])})
+    noresume = fake_proc({50: (1, ["claude", "--fork-session", "--no-session-persistence"])})
     assert hook.parent_session_id(noresume, pid=50) is None
 
 
@@ -125,7 +150,8 @@ def test_script_exits_zero_on_garbage_and_writes_for_real(tmp_path):
         r = subprocess.run([sys.executable, "-I", str(HOOK)], input=stdin,
                            text=True, env=env, capture_output=True)
         assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    # real run: this pytest process is no side chat, so nothing is written
     r = subprocess.run([sys.executable, "-I", str(HOOK)], text=True, env=env,
                        input=json.dumps(event(tmp_path)), capture_output=True)
     assert r.returncode == 0
-    assert lines(tmp_path)[0]["text"] == "the reply to the side question"
+    assert not (tmp_path / ".claude").exists()

@@ -10,8 +10,11 @@ transcript is written, so nothing is searchable.
 ## Mechanism
 1. A managed-settings drop-in installs UserPromptSubmit and Stop hooks running
    `hooks/side_chat_capture.py`.
-2. The hook acts only when `transcript_path` is non-empty and the file does not
-   exist (normal sessions have one). It appends one line
+2. The hook acts only when the claude ancestor's argv has both
+   `--no-session-persistence` and `--fork-session` (the side-chat launch
+   signature) and `transcript_path` is non-empty with no file behind it. A
+   missing file alone is not enough: a new normal session can fire its first
+   prompt before its transcript exists. It appends one line
    `{v, session_id, parent_session_id, cwd, timestamp, role, text, entrypoint}`
    to `~/.claude/side-chats/<session_id>.jsonl`. User text is the hook's
    `prompt`; assistant text is Stop's `last_assistant_message`.
