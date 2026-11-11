@@ -212,11 +212,14 @@ def capture(data: dict, home: str | None = None, read=_read,
         "text": text,
         "entrypoint": env.get("CLAUDE_CODE_ENTRYPOINT") or "",
     }
-    directory = _safe_dir(home)
-    if directory is None:
+    try:
+        directory = _safe_dir(home)
+        if directory is None:
+            return False
+        return _append(directory, session_id,
+                       json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:  # e.g. ELOOP on a symlinked capture file: do nothing
         return False
-    return _append(directory, session_id,
-                   json.dumps(record, ensure_ascii=False) + "\n")
 
 
 def main() -> int:

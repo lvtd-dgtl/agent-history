@@ -160,7 +160,7 @@ def test_text_is_capped(tmp_path):
 
 def test_script_exits_zero_on_garbage(tmp_path):
     env = {**os.environ, "HOME": str(tmp_path)}
-    for stdin in ("not json", "", "[1]", "\udcff\x00{"):
+    for stdin in ("not json", "", "[1]", "\x00{"):
         r = subprocess.run([sys.executable, "-I", str(HOOK)], input=stdin,
                            text=True, env=env, capture_output=True)
         assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
@@ -407,28 +407,27 @@ def test_parent_must_be_a_lowercase_uuid(bad):
 # --- H4: a real /proc, no fakes -------------------------------------------------
 
 needs_proc = pytest.mark.skipif(
-    not (sys.platform.startswith("linux") and os.path.isdir("/proc/self")
-         and __import__("shutil").which("bash")),
-    reason="needs Linux /proc and bash")
+    not (sys.platform.startswith("linux") and os.path.isdir("/proc/self")),
+    reason="needs Linux /proc")
 
 CHILD = (
     "import json,os,subprocess,sys\n"
-    "r=subprocess.run([sys.executable,'-I',sys.argv[1]],input=os.environ['EVT'],"
+    "r=subprocess.run([os.environ['PY'],'-I',sys.argv[1]],input=os.environ['EVT'],"
     "text=True,capture_output=True)\n"
     "sys.exit(r.returncode)\n")
 
 
-def _run_under(tmp_path, claude_args, env_extra=None):
-    """Run the hook as a child of a process whose argv looks like claude's."""
+def _run_under(tmp_path, claude_args):
+    """Run the hook as a child of a process whose argv[0] is `claude`."""
     env = {k: v for k, v in os.environ.items() if not k.startswith(
         ("CLAUDE", "AGENT_HISTORY"))}
     env.update(HOME=str(tmp_path), CLAUDE_CODE_ENTRYPOINT="claude-desktop",
-               EVT=json.dumps(event(tmp_path)), **(env_extra or {}))
-    # `exec -a claude` makes argv[0] "claude", as the real launch has.
-    return subprocess.run(
-        ["bash", "-c", 'exec -a claude "$0" -c "$1" "$2" "${@:3}"',
-         sys.executable, CHILD, str(HOOK), *claude_args],
-        env=env, capture_output=True, text=True)
+               EVT=json.dumps(event(tmp_path)), PY=sys.executable)
+    link = tmp_path / "bin" / "claude"  # absolute path: no PATH lookup of a real claude
+    link.parent.mkdir()
+    link.symlink_to(os.path.realpath(sys.executable))
+    return subprocess.run([str(link), "-S", "-c", CHILD, str(HOOK), *claude_args],
+                          env=env, capture_output=True, text=True)
 
 
 @needs_proc

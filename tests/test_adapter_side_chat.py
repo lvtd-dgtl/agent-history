@@ -207,7 +207,7 @@ def test_line_must_speak_for_its_own_file(side):
                 {k: v for k, v in line("user", "no session id at all here").items()
                  if k != "session_id"}])
     got = list(SideChatAdapter().records())
-    assert [(r.session_id, r.text[:7]) for r in got] == [(SIDE, "a genuin")]
+    assert [(r.session_id, r.text[:7]) for r in got] == [(SIDE, "a genui")]
 
 
 def test_long_cwd_and_timestamp_are_capped(side):
