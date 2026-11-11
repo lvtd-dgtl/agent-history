@@ -198,9 +198,13 @@ def _link_forks(db: sqlite3.Connection, links: dict, uids: _Uids) -> None:
     for record in links.values():
         if not record.fork_of or record.fork_of == record.session_id:
             continue
-        sessions.link_fork(db, uids(record), sessions.uid_for(
-            db, sessions.fork_parent_agent(record.agent), record.machine,
-            record.fork_of, None))
+        try:  # one bad link must not abort the run
+            sessions.link_fork(db, uids(record), sessions.uid_for(
+                db, sessions.fork_parent_agent(record.agent), record.machine,
+                record.fork_of, None))
+        except Exception as exc:
+            print(f"  skipped a fork link: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
     db.commit()
 
 

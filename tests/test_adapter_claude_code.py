@@ -151,6 +151,7 @@ def test_main_session_records_are_not_marked(transcripts):
 
 def test_forked_lines_are_skipped_and_the_rest_carry_fork_of(transcripts):
     fork = {"sessionId": "parent-1", "messageUuid": "u-1"}
+    transcripts("proj", "parent-1", [])  # the parent is indexed from its file
     transcripts("proj", "child-1", [
         msg("user", "copied from the parent at the fork point",
             session="child-1", forkedFrom=fork),
@@ -161,6 +162,72 @@ def test_forked_lines_are_skipped_and_the_rest_carry_fork_of(transcripts):
     (rec,) = records()
     assert rec.text == "a genuinely new turn after the fork"
     assert rec.session_id == "child-1" and rec.fork_of == "parent-1"
+
+
+def test_copied_lines_are_kept_when_the_parent_was_never_scanned(transcripts):
+    # Risk A: the parent transcript is gone (removed, other machine), so the
+    # fork's copies are the only copy of that history.
+    fork = {"sessionId": "gone-parent", "messageUuid": "u-1"}
+    transcripts("proj", "child-1", [
+        msg("user", "copied from a parent that is no longer here",
+            session="child-1", forkedFrom=fork),
+        msg("user", "a genuinely new turn after the fork", session="child-1"),
+    ])
+    got = {r.text: r.fork_of for r in records()}
+    assert got == {"copied from a parent that is no longer here": "gone-parent",
+                   "a genuinely new turn after the fork": "gone-parent"}
+
+
+def test_malformed_forked_from_is_treated_as_absent(transcripts):
+    bad = ["parent-1", ["parent-1"], {"sessionId": {"x": 1}}, {"sessionId": 7},
+           {"sessionId": "a b\x1b[31m"}, {"sessionId": "x" * 300},
+           {"sessionId": "short"}, {}]
+    transcripts("proj", "child-1", [
+        msg("user", f"line {i} that carries an odd forkedFrom value",
+            session="child-1", forkedFrom=v) for i, v in enumerate(bad)])
+    got = records()
+    assert len(got) == len(bad)  # every line kept
+    assert {r.fork_of for r in got} == {None}
+
+
+def test_fork_of_a_fork_names_the_last_copied_line_s_parent(transcripts):
+    grand = {"sessionId": "grandparent-1", "messageUuid": "u"}
+    direct = {"sessionId": "parent-0001", "messageUuid": "u"}
+    transcripts("proj", "grandparent-1", [])
+    transcripts("proj", "parent-0001", [])
+    transcripts("proj", "child-0001", [
+        msg("user", "copied from the grandparent long ago", session="child-0001",
+            forkedFrom=grand),
+        msg("user", "copied from the direct parent at the fork point",
+            session="child-0001", forkedFrom=direct),
+        msg("user", "a genuinely new turn after the fork", session="child-0001"),
+    ])
+    (rec,) = records()
+    assert rec.fork_of == "parent-0001"
+
+
+def test_hostile_labels_are_dropped_and_never_crash_indexing(transcripts):
+    transcripts("proj/par/subagents", "agent-a1", [
+        msg("assistant", "line with an ANSI escape in its type", session="par",
+            isSidechain=True, agentId="ok-id", attributionAgent="\x1b[31mred"),
+        msg("assistant", "line with a newline in its type", session="par",
+            isSidechain=True, agentId="ok-id", attributionAgent="a\nb"),
+        msg("assistant", "line with a dict agent id", session="par",
+            isSidechain=True, agentId={"x": 1}, attributionAgent=["t"]),
+        msg("assistant", "line with a list agent id", session="par",
+            isSidechain=True, agentId=["a"], attributionAgent=5),
+        msg("assistant", "line with a 300 character agent id", session="par",
+            isSidechain=True, agentId="a" * 300, attributionAgent="t" * 300),
+        msg("assistant", "line with a clean pair of labels", session="par",
+            isSidechain=True, agentId="a74d:1@x", attributionAgent="job/researcher 2"),
+    ])
+    got = {r.text.split(" with ")[1]: (r.agent_id, r.agent_type) for r in records()}
+    assert got["an ANSI escape in its type"] == ("ok-id", None)
+    assert got["a newline in its type"] == ("ok-id", None)
+    assert got["a dict agent id"] == (None, None)
+    assert got["a list agent id"] == (None, None)
+    assert got["a 300 character agent id"] == (None, None)
+    assert got["a clean pair of labels"] == ("a74d:1@x", "job/researcher 2")
 
 
 # ------------------------------------------ brief convention: parent session id

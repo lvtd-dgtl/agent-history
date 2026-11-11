@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Iterator
 
 from .. import config, sessions
-from . import Record
+from . import Record, clean_agent_id, clean_agent_type, clean_session_ref
 
 AGENT = "inbox"
 PROCESSED = ".processed"
@@ -178,7 +178,7 @@ def _parse(line: str, machine: str) -> Record | None:
     # Session identity is optional: older shippers send neither field, and
     # the indexer derives the uid itself.
     uid = data.get("session_uid")
-    fork_of = _short(data.get("fork_of"))
+    fork_of = clean_session_ref(data.get("fork_of"))
     if fork_of == field("session_id"):
         fork_of = None  # a session cannot be a fork of itself
     return Record(
@@ -192,18 +192,11 @@ def _parse(line: str, machine: str) -> Record | None:
         machine=machine,
         session_uid=uid if sessions.valid_uid(uid) else None,
         aliases=_aliases(data.get("aliases")),
-        agent_id=_short(data.get("agent_id")),
-        agent_type=_short(data.get("agent_type")),
+        agent_id=clean_agent_id(data.get("agent_id")),
+        agent_type=clean_agent_type(data.get("agent_type")),
         sidechain=data.get("sidechain") is True,
         fork_of=fork_of,
     )
-
-
-def _short(value: object) -> str | None:
-    """An optional label field: a non-empty string of sane length, or None."""
-    if isinstance(value, str) and 0 < len(value) <= 200:
-        return value
-    return None
 
 
 def _aliases(raw: object) -> tuple[tuple[str, str], ...]:

@@ -179,24 +179,33 @@ def fork_parent_agent(agent: str) -> str:
     return FORK_PARENT_AGENT.get(agent, agent)
 
 
+MAX_FORKS = 500
+
+
 def link_fork(db: sqlite3.Connection, child: str, parent: str) -> None:
     """Record that session ``child`` was forked from ``parent``.
 
     A fork is a relative, not the same conversation, so it lives in both
     sessions' metadata (``fork_of`` on the child, ``forks`` on the parent)
-    rather than in the alias table. Hook for adapters that see forks; none
-    does yet. A child already linked to a different parent keeps it (a real
-    fork beats a parent named in a brief).
+    rather than in the alias table. First writer wins: a child already linked
+    to a different parent keeps it (a real fork beats a parent named in a
+    brief). Fork links are unauthenticated hints, brief-derived ones
+    included: they must never widen what a query returns. Nothing happens
+    if the child has no row (the parent is not touched), nothing is written
+    when nothing changed, and ``forks`` holds at most ``MAX_FORKS`` entries.
     """
     row = db.execute("SELECT meta FROM sessions WHERE uid = ?",
                      (child,)).fetchone()
+    if row is None:
+        return
     try:
-        current = json.loads(row[0] or "{}").get("fork_of") if row else None
+        current = json.loads(row[0] or "{}").get("fork_of")
     except ValueError:
         current = None
     if current and current != parent:
         return
-    update_meta(db, child, fork_of=parent)
+    if current != parent:
+        update_meta(db, child, fork_of=parent)
     row = db.execute("SELECT meta FROM sessions WHERE uid = ?",
                      (parent,)).fetchone()
     if row is None:
@@ -205,7 +214,7 @@ def link_fork(db: sqlite3.Connection, child: str, parent: str) -> None:
         forks = json.loads(row[0] or "{}").get("forks") or []
     except ValueError:
         forks = []
-    if child not in forks:
+    if child not in forks and len(forks) < MAX_FORKS:
         update_meta(db, parent, forks=[*forks, child])
 
 

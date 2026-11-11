@@ -33,7 +33,8 @@ they have no corresponding tags.
   a74d]` after the role, `show` prefixes the same label, and MCP results
   include the fields. They ship as optional wire keys (format stays 1). Lines a
   forked session copied from its parent (`forkedFrom`) are no longer indexed
-  under the fork; the fork is linked to its parent in session metadata
+  under the fork when the parent's own transcript is indexed too (when it is
+  not, they are kept: they are the only copy); the fork is linked to its parent in session metadata
   (`fork_of` / `forks`) instead.
   A fork with no new turns yet has no chunks of its own, so no link is
   recorded until its first new turn is indexed (a link would need an empty
@@ -44,8 +45,10 @@ they have no corresponding tags.
   `.../subagents/agent-<id>.jsonl` origin, and `agent_type` when that file
   still exists. Preview by default; local index only. A hub keeps the
   unlabelled copies of chunks it already received (shipping dedups by content
-  hash); to label them, clear the hub's copy of the affected sessions
-  (`purge`) and reship them from a machine that still has the transcripts.
+  hash, so a purge and reship does not help): run `agent-history relabel`
+  (preview first) on the hub; `agent_type` stays empty for hub rows. Only
+  files under an adapter transcript root are read, and only for this
+  machine's rows.
 - **`agent-history ship-jobs`**: ships `claude -p` job transcripts (Claude
   Code session files and the stream-json `transcript.jsonl`) from
   `AGENT_HISTORY_JOBS_DIR`, tagged with the job id, owning Duet channel and
