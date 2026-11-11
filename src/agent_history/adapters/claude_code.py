@@ -62,9 +62,9 @@ class ClaudeCodeAdapter:
         files = self._transcript_files()
         # Sessions whose transcript this scan covers: only their copies can
         # be dropped from a fork, since only then is the text kept elsewhere.
-        self._known_sessions = {p.stem for p in files}
+        known = _KnownParents(files)
         for path in files:
-            yield from self._read_transcript(path)
+            yield from self._read_transcript(path, known)
         for path in self._memory_files():
             yield from self._read_memory(path)
 
@@ -107,12 +107,15 @@ class ClaudeCodeAdapter:
 
     # ---------------------------------------------------------------- parsing
 
-    def _read_transcript(self, path: Path) -> Iterator[Record]:
+    def _read_transcript(self, path: Path, known=frozenset(),
+                         drop_copies: bool = False) -> Iterator[Record]:
+        # ``known`` holds the sessions whose own file yields entries, so a
+        # fork's copies of them are dropped; ``drop_copies`` drops every
+        # copied line (a job never ships another session's history).
         # Records are held until the file is read: the bridge-session line
         # can come after messages that belong to the same session.
         out: list[Record] = []
         bridges = dict(getattr(self, "_bridges", {}))
-        known = getattr(self, "_known_sessions", set())
         try:
             handle = path.open(encoding="utf-8", errors="replace")
         except OSError:
@@ -150,7 +153,7 @@ class ClaudeCodeAdapter:
                     # The last copied line is the fork point, so a fork of a
                     # fork names its direct parent.
                     fork_parent = parent
-                    if parent in known:
+                    if drop_copies or parent in known:
                         # Copied from a parent indexed from its own file:
                         # those lines belong to the parent, not to this one.
                         continue
@@ -229,6 +232,44 @@ def _bridge_kind(bridge_id: object) -> str | None:
         if bridge_id.startswith("session_") and len(bridge_id) > 8:
             return "bridge"
     return None
+
+
+class _KnownParents:
+    """Session ids whose own transcript file opens and yields at least one
+    entry that is not a fork copy. Checked on demand and cached, so only
+    parents that a fork actually names are read. An empty, truncated or
+    unreadable parent is not known: its copies would be the only record."""
+
+    def __init__(self, files: list[Path]) -> None:
+        self._paths: dict[str, list[Path]] = {}
+        for path in files:
+            self._paths.setdefault(path.stem, []).append(path)
+        self._cache: dict[str, bool] = {}
+
+    def __contains__(self, session: object) -> bool:
+        if not isinstance(session, str) or session not in self._paths:
+            return False
+        if session not in self._cache:
+            self._cache[session] = any(
+                _has_own_entry(p) for p in self._paths[session])
+        return self._cache[session]
+
+
+def _has_own_entry(path: Path) -> bool:
+    try:
+        with path.open(encoding="utf-8", errors="replace") as lines:
+            for line in lines:
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if (isinstance(entry, dict) and not entry.get("isMeta")
+                        and entry.get("type") in ("user", "assistant")
+                        and not isinstance(entry.get("forkedFrom"), dict)):
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 # A fresh-context session (Claude desktop's start_session) has no forkedFrom;

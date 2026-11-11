@@ -27,7 +27,7 @@ from pathlib import Path
 from . import config, store
 from .adapters import clean_agent_type
 
-_ORIGIN = re.compile(r"[\\/]subagents[\\/]agent-([A-Za-z0-9_-]{1,64})\.jsonl\Z")
+_ORIGIN = re.compile(r"[\\/]subagents[\\/]agent-([A-Za-z0-9._:@-]{1,64})\.jsonl\Z")
 
 
 def _under_a_root(origin: str) -> bool:

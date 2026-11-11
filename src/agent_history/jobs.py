@@ -265,7 +265,9 @@ def _session_files(root: Path, session_ids: list[str]) -> list[Path]:
 
 def _file_records(path: Path) -> list[Record]:
     """Messages of one Claude Code session file, parsed as the adapter does."""
-    return list(ClaudeCodeAdapter()._read_transcript(path))
+    # Lines copied from a forked-from session are another session's history:
+    # never shipped under a job id.
+    return list(ClaudeCodeAdapter()._read_transcript(path, drop_copies=True))
 
 
 def collect(job: Job, projects: Path) -> Collected:

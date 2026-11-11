@@ -151,7 +151,8 @@ def test_main_session_records_are_not_marked(transcripts):
 
 def test_forked_lines_are_skipped_and_the_rest_carry_fork_of(transcripts):
     fork = {"sessionId": "parent-1", "messageUuid": "u-1"}
-    transcripts("proj", "parent-1", [])  # the parent is indexed from its file
+    transcripts("proj", "parent-1", [
+        msg("user", "the parent's own question here", session="parent-1")])
     transcripts("proj", "child-1", [
         msg("user", "copied from the parent at the fork point",
             session="child-1", forkedFrom=fork),
@@ -159,7 +160,7 @@ def test_forked_lines_are_skipped_and_the_rest_carry_fork_of(transcripts):
             session="child-1", forkedFrom=fork),
         msg("user", "a genuinely new turn after the fork", session="child-1"),
     ])
-    (rec,) = records()
+    (rec,) = [r for r in records() if r.session_id == "child-1"]
     assert rec.text == "a genuinely new turn after the fork"
     assert rec.session_id == "child-1" and rec.fork_of == "parent-1"
 
@@ -178,6 +179,48 @@ def test_copied_lines_are_kept_when_the_parent_was_never_scanned(transcripts):
                    "a genuinely new turn after the fork": "gone-parent"}
 
 
+def _fork_with_parent_file(transcripts, make_parent):
+    fork = {"sessionId": "parent-1", "messageUuid": "u-1"}
+    make_parent()
+    transcripts("proj", "child-1", [
+        msg("user", "copied from a parent whose file is unusable",
+            session="child-1", forkedFrom=fork),
+        msg("user", "a genuinely new turn after the fork", session="child-1")])
+    return {r.text for r in records() if r.session_id == "child-1"}
+
+
+def test_copies_are_kept_when_the_parent_file_is_empty(transcripts):
+    # Risk: an empty parent file counted as "known" and the copies vanished.
+    texts = _fork_with_parent_file(
+        transcripts, lambda: transcripts("proj", "parent-1", []))
+    assert "copied from a parent whose file is unusable" in texts
+
+
+def test_copies_are_kept_when_the_parent_file_is_truncated(transcripts):
+    def make():
+        path = transcripts("proj", "parent-1", [])
+        path.write_text('{"type": "user", "sessionId": "parent-1", "mess')
+    texts = _fork_with_parent_file(transcripts, make)
+    assert "copied from a parent whose file is unusable" in texts
+
+
+def test_copies_are_kept_when_the_parent_file_cannot_be_opened(transcripts):
+    def make():
+        # A directory with the right name: listed, but open() fails.
+        (transcripts.root / "proj" / "parent-1.jsonl").mkdir(parents=True)
+    texts = _fork_with_parent_file(transcripts, make)
+    assert "copied from a parent whose file is unusable" in texts
+
+
+def test_a_parent_holding_only_copies_is_not_known(transcripts):
+    def make():
+        transcripts("proj", "parent-1", [
+            msg("user", "copy inside the parent itself", session="parent-1",
+                forkedFrom={"sessionId": "elder-001", "messageUuid": "u"})])
+    texts = _fork_with_parent_file(transcripts, make)
+    assert "copied from a parent whose file is unusable" in texts
+
+
 def test_malformed_forked_from_is_treated_as_absent(transcripts):
     bad = ["parent-1", ["parent-1"], {"sessionId": {"x": 1}}, {"sessionId": 7},
            {"sessionId": "a b\x1b[31m"}, {"sessionId": "x" * 300},
@@ -193,8 +236,10 @@ def test_malformed_forked_from_is_treated_as_absent(transcripts):
 def test_fork_of_a_fork_names_the_last_copied_line_s_parent(transcripts):
     grand = {"sessionId": "grandparent-1", "messageUuid": "u"}
     direct = {"sessionId": "parent-0001", "messageUuid": "u"}
-    transcripts("proj", "grandparent-1", [])
-    transcripts("proj", "parent-0001", [])
+    transcripts("proj", "grandparent-1", [
+        msg("user", "the grandparent's own line here", session="grandparent-1")])
+    transcripts("proj", "parent-0001", [
+        msg("user", "the parent's own line here", session="parent-0001")])
     transcripts("proj", "child-0001", [
         msg("user", "copied from the grandparent long ago", session="child-0001",
             forkedFrom=grand),
@@ -202,7 +247,8 @@ def test_fork_of_a_fork_names_the_last_copied_line_s_parent(transcripts):
             session="child-0001", forkedFrom=direct),
         msg("user", "a genuinely new turn after the fork", session="child-0001"),
     ])
-    (rec,) = records()
+    got = [r for r in records() if r.session_id == "child-0001"]
+    (rec,) = got
     assert rec.fork_of == "parent-0001"
 
 

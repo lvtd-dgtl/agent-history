@@ -169,6 +169,11 @@ def _link_sessions(db: sqlite3.Connection, links: dict, uids: _Uids) -> None:
     """Apply the aliases adapters found. Re-applying a link is a no-op, so
     this runs on every pass over sources that carry them."""
     for record in links.values():
+        if not record.aliases:
+            # A fork link alone never creates a session: a session with no
+            # chunks of its own would show as an empty row. Sessions with
+            # chunks get their row when the chunks are written.
+            continue
         uid = uids(record)
         sessions.register_session(
             db, uid, agent=record.agent,
@@ -200,7 +205,12 @@ def _link_forks(db: sqlite3.Connection, links: dict, uids: _Uids) -> None:
         try:  # one bad link must not abort the run
             sessions.link_fork(db, uids(record), sessions.uid_for(
                 db, record.agent, record.machine, record.fork_of, None))
-        except Exception as exc:
+        except (sqlite3.Error, TypeError, ValueError, AttributeError) as exc:
+            if isinstance(exc, sqlite3.OperationalError):
+                # e.g. "database is locked": every later link would fail the
+                # same way, so say it once and skip the rest.
+                print(f"  skipped fork links: {exc}", file=sys.stderr)
+                break
             print(f"  skipped a fork link: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
     db.commit()

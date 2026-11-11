@@ -527,7 +527,8 @@ def test_fork_is_linked_and_copied_lines_stay_with_the_parent(transcripts,
 
 def test_orphaned_fork_text_is_indexed_and_still_linked_later(transcripts,
                                                               fake_embed):
-    # Risk A end to end: the parent was never indexed, so nothing is lost.
+    # Risk A end to end: the parent was never indexed, so nothing is lost;
+    # when it shows up on a later run the link is made both ways.
     transcripts("proj", "child-1", [
         msg("user", "history copied from a parent we never indexed",
             session="child-1",
@@ -536,6 +537,82 @@ def test_orphaned_fork_text_is_indexed_and_still_linked_later(transcripts,
     index.run()
     texts = {r[0] for r in store.open_for_read().execute("SELECT text FROM chunks")}
     assert "history copied from a parent we never indexed" in texts
+    transcripts("proj", "ghost-parent", [
+        msg("user", "the parent's own later question here", session="ghost-parent")])
+    index.run()
+    db = store.open_for_read()
+    parent = sessions.derive_uid("claude-code", "testbox", "ghost-parent")
+    child = sessions.derive_uid("claude-code", "testbox", "child-1")
+    meta = lambda uid: json.loads(db.execute(
+        "SELECT meta FROM sessions WHERE uid = ?", (uid,)).fetchone()[0])
+    assert meta(child)["fork_of"] == parent
+    assert meta(parent)["forks"] == [child]
+
+
+def test_parent_deleted_between_runs_keeps_one_copy_with_the_parent(
+        transcripts, fake_embed):
+    transcripts("proj", "parent-1", [
+        msg("user", "the original question about caching", session="parent-1")])
+    transcripts("proj", "child-1", [
+        msg("user", "the original question about caching", session="child-1",
+            forkedFrom={"sessionId": "parent-1", "messageUuid": "u"}),
+        msg("user", "a new direction after branching off", session="child-1")])
+    index.run()
+    (transcripts.root / "proj" / "parent-1.jsonl").unlink()
+    index.run()  # the copy is no longer dropped, but its text is already held
+    rows = store.open_for_read().execute(
+        "SELECT text, session_id FROM chunks").fetchall()
+    assert sorted(rows) == [("a new direction after branching off", "child-1"),
+                            ("the original question about caching", "parent-1")]
+
+
+def test_a_fork_without_chunks_of_its_own_gets_no_session_row(transcripts,
+                                                              fake_embed):
+    # The parent was indexed, then deleted; the fork has only copies, all of
+    # whose text is held by the parent's chunks: no empty session row.
+    transcripts("proj", "parent-1", [
+        msg("user", "the original question about caching", session="parent-1")])
+    child = transcripts("proj", "child-1", [
+        msg("user", "the original question about caching", session="child-1",
+            forkedFrom={"sessionId": "parent-1", "messageUuid": "u"})])
+    index.run()
+    (transcripts.root / "proj" / "parent-1.jsonl").unlink()
+    index.run()
+    db = store.open_for_read()
+    uid = sessions.derive_uid("claude-code", "testbox", "child-1")
+    assert db.execute("SELECT count(*) FROM sessions WHERE uid = ?",
+                      (uid,)).fetchone()[0] == 0
+    assert db.execute("SELECT count(*) FROM sessions").fetchone()[0] == 1
+
+
+def test_a_locked_database_is_reported_once_per_pass_and_skipped(transcripts, fake_embed,
+                                                        monkeypatch, capsys):
+    import sqlite3
+    for n in range(3):
+        transcripts("proj", f"child-0{n}", [
+            msg("user", f"a new direction number {n} after branching",
+                session=f"child-0{n}",
+                forkedFrom={"sessionId": "parent-01", "messageUuid": "u"})])
+
+    def locked(*a, **k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(sessions, "link_fork", locked)
+    assert index.run() == 0
+    err = capsys.readouterr().err
+    # once per linking pass (before and after embedding), not once per link
+    assert err.count("database is locked") == 2
+
+
+def test_an_unexpected_error_in_a_fork_link_is_not_swallowed(transcripts,
+                                                             fake_embed,
+                                                             monkeypatch):
+    transcripts("proj", "child-1", [
+        msg("user", "a new direction after branching off", session="child-1",
+            forkedFrom={"sessionId": "parent-01", "messageUuid": "u"})])
+    monkeypatch.setattr(sessions, "link_fork",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyError("x")))
+    with pytest.raises(KeyError):
+        index.run()
 
 
 def test_one_bad_fork_link_does_not_abort_the_run(transcripts, fake_embed,
@@ -547,7 +624,7 @@ def test_one_bad_fork_link_does_not_abort_the_run(transcripts, fake_embed,
         msg("user", "an unrelated session with its own text", session="other-01")])
 
     def boom(*a, **k):
-        raise RuntimeError("bad link")
+        raise ValueError("bad link")
     monkeypatch.setattr(sessions, "link_fork", boom)
     assert index.run() == 0
     assert "skipped a fork link" in capsys.readouterr().err
@@ -848,3 +925,5 @@ def test_relabel_origin_pattern_is_strict(transcripts, fake_embed):
                 + ".jsonl", "/x/subagents/agent-ok.jsonl\n", "/x/subagents/agent-ok.jsonl.bak"):
         assert relabel._ORIGIN.search(bad) is None, bad
     assert relabel._ORIGIN.search("/x/subagents/agent-ok_1-2.jsonl")
+    # the same id class as live indexing, so both label a file alike
+    assert relabel._ORIGIN.search("/x/subagents/agent-a.b:c@d.jsonl")

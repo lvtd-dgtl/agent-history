@@ -28,12 +28,12 @@ they have no corresponding tags.
   include the fields. They ship as optional wire keys (format stays 1). Lines a
   forked session copied from its parent (`forkedFrom`) are no longer indexed
   under the fork when the parent's own transcript is indexed too (when it is
-  not, they are kept: they are the only copy); the fork is linked to its parent in session metadata
+  not, or it is empty or unreadable, they are kept: they are the only copy; `ship-jobs` never ships copied lines under a job); the fork is linked to its parent in session metadata
   (`fork_of` / `forks`) instead.
   A fork with no new turns yet has no chunks of its own, so no link is
   recorded until its first new turn is indexed (a link would need an empty
   session row that listings would show). `ship-jobs` ships the subagent
-  labels too. The labels on the wire are capped at 200 characters and redacted.
+  labels too. The labels on the wire are checked against the hub's rules (64 characters of letters, digits and `._:@-`, plus `/` and space for types) and redacted.
 - **`agent-history relabel [--apply]`**: fills `agent_id` and `sidechain` on
   subagent chunks indexed before labels existed, from the
   `.../subagents/agent-<id>.jsonl` origin, and `agent_type` when that file

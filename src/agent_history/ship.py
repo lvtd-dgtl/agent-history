@@ -43,6 +43,7 @@ from collections import Counter
 from pathlib import Path
 
 from . import adapters, config, redact, sessions, store, textproc
+from .adapters import clean_agent_id, clean_agent_type, clean_session_ref
 
 BATCH_LINES = 2000
 FORMAT = 1
@@ -208,10 +209,12 @@ class Batches:
             line["aliases"] = [list(pair) for pair in aliases]
         # Optional wire keys, present only when set: an old hub ignores them
         # and a line without them is still valid FORMAT 1.
-        # Capped and redacted like any other string that leaves the machine.
-        for key, value in (("agent_id", agent_id), ("agent_type", agent_type),
-                           ("fork_of", fork_of)):
-            label = _label(value, self.redacted)
+        # Shape-checked (as the hub does) and redacted like any other string that leaves the machine.
+        for key, value, clean in (
+                ("agent_id", agent_id, clean_agent_id),
+                ("agent_type", agent_type, clean_agent_type),
+                ("fork_of", fork_of, clean_session_ref)):
+            label = _label(value, self.redacted, clean)
             if label and not (key == "fork_of" and label == session_id):
                 line[key] = label
         if sidechain:
@@ -244,10 +247,12 @@ class Batches:
         self.pending = []
 
 
-def _label(value: object, counter: Counter) -> str | None:
-    """An optional wire label: a non-empty string of at most 200 characters,
-    redacted; anything else is dropped."""
-    if isinstance(value, str) and 0 < len(value) <= 200:
+def _label(value: object, counter: Counter, clean=clean_agent_id) -> str | None:
+    """An optional wire label, kept only in the shape the hub accepts (at
+    most 64 characters of its charset; a fork id up to 128), then redacted;
+    anything else is dropped."""
+    value = clean(value)
+    if value:
         return _redact_values(value, counter)
     return None
 

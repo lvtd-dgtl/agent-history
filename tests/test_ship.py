@@ -285,9 +285,12 @@ def test_subagent_and_fork_fields_ride_the_wire_and_survive_the_inbox(
     transcripts("proj", "parent-1", [msg(
         "user", "copied line from the parent session", session="parent-1")])
     assert ship.run() == 0
-    by_text = {r["text"]: r for r in shipped(hub)}
+    records = shipped(hub)
+    by_text = {r["text"]: r for r in records}
     # the fork's copy is not shipped; the parent's own line is (once)
-    assert len(by_text) == 3
+    assert len(records) == 3
+    copies = [r for r in records if r["text"] == "copied line from the parent session"]
+    assert [r["session_id"] for r in copies] == ["parent-1"]
     sub = by_text["subagent output that should be labelled"]
     assert (sub["agent_id"], sub["agent_type"], sub["sidechain"]) == (
         "a74d", "job-researcher", True)
@@ -375,7 +378,7 @@ def test_wire_labels_are_capped_redacted_and_never_self_forks(transcripts, hub):
             attributionAgent=f"type-{GH}")])
     ship.run()
     (rec,) = shipped(hub)
-    assert "agent_id" not in rec  # over the 200 character cap: dropped
+    assert "agent_id" not in rec  # over the hub's 64 character cap: dropped
     assert GH not in rec["agent_type"] and "[REDACTED:github_token]" in rec["agent_type"]
     selfish = {"v": 1, "agent": "claude-code", "origin": "/o", "session_id": "s",
                "text": "a line forking itself", "fork_of": "s"}
@@ -398,3 +401,20 @@ def test_backfill_looks_up_each_fork_parent_once(transcripts, fake_embed, hub,
                         lambda db, uid: calls.append(uid) or real(db, uid))
     ship.run(backfill=True)
     assert len(calls) == len(set(calls))
+
+
+def test_wire_labels_follow_the_hub_charset_and_cap(transcripts, hub):
+    # 65 characters is over the hub's cap, and a space is not in the id charset.
+    transcripts("proj/p/subagents", "agent-x", [
+        msg("assistant", "subagent line with an id of 65 characters here",
+            session="p", isSidechain=True, agentId="a" * 65,
+            attributionAgent="b" * 64),
+        msg("assistant", "subagent line with a spaced id and a typed label",
+            session="p", isSidechain=True, agentId="a b",
+            attributionAgent="job/researcher 2")])
+    ship.run()
+    got = {r["text"].split(" with ")[1]: r for r in shipped(hub)}
+    first = got["an id of 65 characters here"]
+    assert "agent_id" not in first and first["agent_type"] == "b" * 64
+    second = got["a spaced id and a typed label"]
+    assert "agent_id" not in second and second["agent_type"] == "job/researcher 2"

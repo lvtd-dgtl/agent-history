@@ -352,3 +352,19 @@ def test_job_subagent_chunks_ship_labelled(env):
         "a74d", "job-researcher", True)
     main = [l for l in lines if l["origin"].endswith(f"{SID}.jsonl")]
     assert main and not any("sidechain" in l or "agent_id" in l for l in main)
+
+
+def test_forked_copies_are_never_shipped_under_a_job(env):
+    # Risk: a job run with --resume X --fork-session carries X's whole
+    # history as forkedFrom lines; none of it may ship under the job id.
+    fork = {"sessionId": "parent-private-01", "messageUuid": "u-1"}
+    job(env, session=[
+        dict(session_line("user", "private history copied from the parent",
+                          "2026-11-01T11:00:00.000Z"), forkedFrom=fork),
+        session_line("assistant", "Found it: the middleware redirects early.",
+                     "2026-11-01T12:03:00.000Z"),
+    ])
+    assert jobs.run() == 0
+    texts = [l["text"] for l in shipped_lines(env["landing"])]
+    assert not any("private history copied" in t for t in texts)
+    assert any("middleware redirects early" in t for t in texts)
