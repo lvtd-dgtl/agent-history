@@ -9,11 +9,37 @@ databases. `Record.origin` accommodates both — a file path, or `db:<path>#<tab
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator, Protocol, runtime_checkable
 
 from .. import config
+
+
+_AGENT_ID = re.compile(r"[A-Za-z0-9._:@-]{1,64}")
+_AGENT_TYPE = re.compile(r"[A-Za-z0-9._:@/ -]{1,64}")
+_SESSION_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
+
+
+def _clean(pattern: re.Pattern, value: object) -> str | None:
+    return value if isinstance(value, str) and pattern.fullmatch(value) else None
+
+
+def clean_agent_id(value: object) -> str | None:
+    """A subagent id, or None for anything not shaped like one (non-string,
+    control characters, ANSI escapes, newlines, over 64 characters)."""
+    return _clean(_AGENT_ID, value)
+
+
+def clean_agent_type(value: object) -> str | None:
+    """A subagent type label, or None; same rules as `clean_agent_id`."""
+    return _clean(_AGENT_TYPE, value)
+
+
+def clean_session_ref(value: object) -> str | None:
+    """A session id named by a fork link, or None if it is not id-shaped."""
+    return _clean(_SESSION_REF, value)
 
 
 @dataclass(frozen=True)

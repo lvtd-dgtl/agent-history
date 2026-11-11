@@ -500,19 +500,19 @@ def test_hub_ignores_a_uid_claimed_from_another_machine(inbox, fake_embed):
 
 def test_fork_is_linked_and_copied_lines_stay_with_the_parent(transcripts,
                                                                fake_embed):
-    transcripts("proj", "parent", [msg("user", "the original question about caching",
-                                       session="parent")])
-    fork = {"sessionId": "parent", "messageUuid": "u"}
-    transcripts("proj", "child", [
-        msg("user", "the original question about caching", session="child",
+    transcripts("proj", "parent-1", [msg("user", "the original question about caching",
+                                       session="parent-1")])
+    fork = {"sessionId": "parent-1", "messageUuid": "u"}
+    transcripts("proj", "child-1", [
+        msg("user", "the original question about caching", session="child-1",
             forkedFrom=fork),
-        msg("user", "a new direction after branching off", session="child"),
+        msg("user", "a new direction after branching off", session="child-1"),
     ])
     index.run()
     index.run()  # re-linking is idempotent
     db = store.open_for_read()
-    parent = sessions.derive_uid("claude-code", "testbox", "parent")
-    child = sessions.derive_uid("claude-code", "testbox", "child")
+    parent = sessions.derive_uid("claude-code", "testbox", "parent-1")
+    child = sessions.derive_uid("claude-code", "testbox", "child-1")
 
     def meta(uid):
         return json.loads(db.execute("SELECT meta FROM sessions WHERE uid = ?",
@@ -521,8 +521,82 @@ def test_fork_is_linked_and_copied_lines_stay_with_the_parent(transcripts,
     assert meta(parent)["forks"] == [child]
     texts = {r[0]: r[1] for r in db.execute(
         "SELECT text, session_id FROM chunks")}
-    assert texts["the original question about caching"] == "parent"
-    assert texts["a new direction after branching off"] == "child"
+    assert texts["the original question about caching"] == "parent-1"
+    assert texts["a new direction after branching off"] == "child-1"
+
+
+def test_orphaned_fork_text_is_indexed_and_still_linked_later(transcripts,
+                                                              fake_embed):
+    # Risk A end to end: the parent was never indexed, so nothing is lost.
+    transcripts("proj", "child-1", [
+        msg("user", "history copied from a parent we never indexed",
+            session="child-1",
+            forkedFrom={"sessionId": "ghost-parent", "messageUuid": "u"}),
+        msg("user", "a new direction after branching off", session="child-1")])
+    index.run()
+    texts = {r[0] for r in store.open_for_read().execute("SELECT text FROM chunks")}
+    assert "history copied from a parent we never indexed" in texts
+
+
+def test_one_bad_fork_link_does_not_abort_the_run(transcripts, fake_embed,
+                                                  monkeypatch, capsys):
+    transcripts("proj", "child-1", [
+        msg("user", "a new direction after branching off", session="child-1",
+            forkedFrom={"sessionId": "parent-01", "messageUuid": "u"})])
+    transcripts("proj", "other-01", [
+        msg("user", "an unrelated session with its own text", session="other-01")])
+
+    def boom(*a, **k):
+        raise RuntimeError("bad link")
+    monkeypatch.setattr(sessions, "link_fork", boom)
+    assert index.run() == 0
+    assert "skipped a fork link" in capsys.readouterr().err
+    assert store.open_for_read().execute(
+        "SELECT count(*) FROM chunks").fetchone()[0] == 2
+
+
+def _fork_db():
+    db, _ = store.open_for_write()
+    uids = {}
+    for sid in ("parent-1", "child-1", "child-2"):
+        uids[sid] = sessions.derive_uid("claude-code", "m", sid)
+        sessions.register_session(db, uids[sid], agent="claude-code", machine="m",
+                                  session_id=sid, origin="/x")
+    meta = lambda uid: json.loads(db.execute(
+        "SELECT meta FROM sessions WHERE uid = ?", (uid,)).fetchone()[0])
+    return db, uids, meta
+
+
+def test_link_fork_caps_the_forks_list(fake_embed):
+    db, uids, meta = _fork_db()
+    sessions.update_meta(db, uids["parent-1"],
+                         forks=[f"u{i}" for i in range(sessions.MAX_FORKS)])
+    sessions.link_fork(db, uids["child-1"], uids["parent-1"])
+    assert len(meta(uids["parent-1"])["forks"]) == sessions.MAX_FORKS
+    assert uids["child-1"] not in meta(uids["parent-1"])["forks"]
+
+
+def test_link_fork_writes_nothing_when_nothing_changed(fake_embed):
+    db, uids, meta = _fork_db()
+    sessions.link_fork(db, uids["child-1"], uids["parent-1"])
+    seen = []
+    db.set_trace_callback(lambda q: seen.append(q))
+    sessions.link_fork(db, uids["child-1"], uids["parent-1"])
+    assert not [q for q in seen if q.lstrip().upper().startswith("UPDATE")]
+
+
+def test_link_fork_without_a_child_row_leaves_the_parent_alone(fake_embed):
+    db, uids, meta = _fork_db()
+    sessions.link_fork(db, "no-such-child-uid", uids["parent-1"])
+    assert "forks" not in meta(uids["parent-1"])
+
+
+def test_link_fork_first_writer_wins(fake_embed):
+    db, uids, meta = _fork_db()
+    sessions.link_fork(db, uids["child-1"], uids["parent-1"])
+    sessions.link_fork(db, uids["child-1"], uids["child-2"])
+    assert meta(uids["child-1"])["fork_of"] == uids["parent-1"]
+    assert "forks" not in meta(uids["child-2"])
 
 
 def test_subagent_chunks_are_labelled_in_search_show_and_mcp_rows(
@@ -561,17 +635,17 @@ def test_migration_adds_subagent_columns_to_an_existing_index(fake_embed):
 def test_fork_and_parent_in_one_run_link_both_ways(transcripts, fake_embed):
     """The parent's row does not exist until its chunks are written, so the
     link must be applied after embedding, not only before."""
-    transcripts("proj", "parent", [msg("user", "the original question about caching",
-                                       session="parent")])
-    transcripts("proj", "child", [
-        msg("user", "a new direction after branching off", session="child",
-            forkedFrom={"sessionId": "parent", "messageUuid": "u"}),
-        msg("user", "and one more fresh turn on the fork", session="child")])
+    transcripts("proj", "parent-1", [msg("user", "the original question about caching",
+                                       session="parent-1")])
+    transcripts("proj", "child-1", [
+        msg("user", "a new direction after branching off", session="child-1",
+            forkedFrom={"sessionId": "parent-1", "messageUuid": "u"}),
+        msg("user", "and one more fresh turn on the fork", session="child-1")])
     # first line of the fork is forkedFrom: skipped, so only the second remains
     index.run()  # ONE run
     db = store.open_for_read()
-    parent = sessions.derive_uid("claude-code", "testbox", "parent")
-    child = sessions.derive_uid("claude-code", "testbox", "child")
+    parent = sessions.derive_uid("claude-code", "testbox", "parent-1")
+    child = sessions.derive_uid("claude-code", "testbox", "child-1")
     meta = lambda uid: json.loads(db.execute(
         "SELECT meta FROM sessions WHERE uid = ?", (uid,)).fetchone()[0])
     assert meta(child)["fork_of"] == parent
@@ -688,3 +762,89 @@ def test_link_fork_keeps_an_existing_different_parent(fake_embed):
     meta = json.loads(db.execute("SELECT meta FROM sessions WHERE uid = ?",
                                  (uid("a"),)).fetchone()[0])
     assert meta["fork_of"] == uid("b")
+
+
+def _unlabel(db_rows_sql="UPDATE chunks SET agent_id = NULL, agent_type = NULL, "
+                          "sidechain = NULL"):
+    db = store.open_for_write()[0]
+    db.execute(db_rows_sql)
+    db.commit()
+    db.close()
+
+
+def _subagent_index(transcripts):
+    path = transcripts("proj/par/subagents", "agent-a74d", [
+        msg("assistant", "subagent reports the flaky migration is fixed",
+            session="par", isSidechain=True, agentId="a74d",
+            attributionAgent="job-researcher")])
+    index.run()
+    return path
+
+
+def test_relabel_dry_run_writes_nothing_and_second_apply_is_a_no_op(
+        transcripts, fake_embed, capsys):
+    from agent_history import relabel
+    _subagent_index(transcripts)
+    _unlabel()
+    snap = lambda: store.open_for_read().execute(
+        "SELECT agent_id, agent_type, sidechain FROM chunks").fetchall()
+    before = snap()
+    relabel.run()
+    assert snap() == before
+    capsys.readouterr()
+    relabel.run(apply=True)
+    assert "relabelled 1 chunk(s)" in capsys.readouterr().out
+    relabel.run(apply=True)
+    assert "relabelled 0 chunk(s) in 0" in capsys.readouterr().out
+
+
+def test_relabel_fills_a_missing_type_on_a_later_run(transcripts, fake_embed,
+                                                     capsys):
+    from agent_history import relabel
+    _subagent_index(transcripts)
+    _unlabel("UPDATE chunks SET agent_type = NULL")  # id and flag already set
+    relabel.run(apply=True)
+    assert "relabelled 1 chunk(s)" in capsys.readouterr().out
+    assert store.open_for_read().execute(
+        "SELECT agent_type FROM chunks").fetchone()[0] == "job-researcher"
+
+
+def test_relabel_never_reads_files_for_other_machines_rows(transcripts,
+                                                           fake_embed):
+    from agent_history import relabel
+    _subagent_index(transcripts)
+    _unlabel("UPDATE chunks SET agent_id = NULL, agent_type = NULL, "
+             "sidechain = NULL, machine = 'other-box'")
+    relabel.run(apply=True)
+    assert store.open_for_read().execute(
+        "SELECT agent_id, agent_type, sidechain FROM chunks").fetchone() == (
+        "a74d", None, 1)
+
+
+def test_relabel_only_opens_origins_under_a_transcript_root(tmp_path,
+                                                            transcripts,
+                                                            fake_embed):
+    from agent_history import relabel
+    outside = tmp_path / "elsewhere" / "subagents"
+    outside.mkdir(parents=True)
+    f = outside / "agent-zz.jsonl"
+    f.write_text(json.dumps({"attributionAgent": "planted"}) + "\n")
+    transcripts("proj", "par", [msg("user", "a main thread line here", session="par")])
+    index.run()
+    db = store.open_for_write()[0]
+    db.execute("UPDATE chunks SET origin = ?, sidechain = NULL", (str(f),))
+    db.commit()
+    db.close()
+    relabel.run(apply=True)
+    assert store.open_for_read().execute(
+        "SELECT agent_id, agent_type, sidechain FROM chunks").fetchone() == (
+        "zz", None, 1)
+    assert relabel.agent_type_of("a\x00b") is None  # NUL in a path: no crash
+
+
+def test_relabel_origin_pattern_is_strict(transcripts, fake_embed):
+    from agent_history import relabel
+    for bad in ("/x/subagents/agent-a b.jsonl", "/x/subagents/agent-" + "a" * 65
+                + ".jsonl", "/x/subagents/agent-ok.jsonl\n", "/x/subagents/agent-ok.jsonl.bak"):
+        assert relabel._ORIGIN.search(bad) is None, bad
+    assert relabel._ORIGIN.search("/x/subagents/agent-ok_1-2.jsonl")

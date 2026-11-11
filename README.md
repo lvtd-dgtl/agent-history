@@ -848,6 +848,21 @@ subagent files are all ignored. A real `forkedFrom` link always wins. The
 line stays in the indexed text as usual (redacted like any other text).
 **The fleet's briefs for `start_session` should begin with this line.**
 
+### Labelling old subagent chunks: `relabel`
+
+Chunks indexed before subagent labels existed have no `agent_id` or
+`sidechain` value. `agent-history relabel` previews what it would fill and
+changes nothing; `agent-history relabel --apply` writes. It derives the id and
+the sidechain flag from the `.../subagents/agent-<id>.jsonl` origin, and the
+agent type from the transcript when that file is still under a transcript root
+and belongs to this machine. Nothing is re-embedded or shipped. On a hub, run
+it there: `agent_type` stays empty for hub rows. The preview still opens the
+index (runs the additive migration and takes the indexing lock).
+
+Undo: it only fills `agent_id`, `agent_type` and `sidechain` where they were
+empty, so restore a SQLite backup, or set those three columns to NULL for the
+affected rows. Take a SQLite backup first on any shared index.
+
 ## How indexing works
 
 ```
