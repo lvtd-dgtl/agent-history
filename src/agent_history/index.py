@@ -6,6 +6,7 @@ mechanism works identically for file-backed and database-backed adapters.
 """
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import sqlite3
@@ -118,7 +119,15 @@ def _pending(
             if textproc.is_injection(record.text):
                 continue
             if links is not None and (record.aliases or record.fork_of):
-                links.setdefault(_session_key(record), record)
+                key = _session_key(record)
+                held = links.get(key)
+                if held is None:
+                    links[key] = record
+                elif record.aliases and not held.aliases:
+                    # A fork-only record must not shadow aliases found later.
+                    links[key] = (record if record.fork_of or not held.fork_of
+                                  else dataclasses.replace(
+                                      record, fork_of=held.fork_of))
             rid = None
             for ordinal, (start, end, piece) in enumerate(
                     redacted_pieces(record.text)):
@@ -213,6 +222,9 @@ def _link_forks(db: sqlite3.Connection, links: dict, uids: _Uids) -> None:
                 break
             print(f"  skipped a fork link: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
+        except Exception as exc:  # one bad link must never block indexing
+            print(f"  ERROR in a fork link (skipped): {type(exc).__name__}: "
+                  f"{str(exc)[:80]}", file=sys.stderr)
     db.commit()
 
 

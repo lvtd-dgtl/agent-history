@@ -145,6 +145,8 @@ class ClaudeCodeAdapter:
                 if role not in ("user", "assistant"):
                     continue
                 forked = entry.get("forkedFrom")
+                if drop_copies and isinstance(forked, dict):
+                    continue  # decided on structure: a bad id must not leak a copy
                 parent = (clean_session_ref(forked.get("sessionId"))
                           if isinstance(forked, dict) else None)
                 if parent and parent == entry.get("sessionId"):
@@ -153,7 +155,7 @@ class ClaudeCodeAdapter:
                     # The last copied line is the fork point, so a fork of a
                     # fork names its direct parent.
                     fork_parent = parent
-                    if drop_copies or parent in known:
+                    if parent in known:
                         # Copied from a parent indexed from its own file:
                         # those lines belong to the parent, not to this one.
                         continue

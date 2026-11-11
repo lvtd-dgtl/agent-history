@@ -356,15 +356,18 @@ def test_job_subagent_chunks_ship_labelled(env):
 
 def test_forked_copies_are_never_shipped_under_a_job(env):
     # Risk: a job run with --resume X --fork-session carries X's whole
-    # history as forkedFrom lines; none of it may ship under the job id.
-    fork = {"sessionId": "parent-private-01", "messageUuid": "u-1"}
-    job(env, session=[
-        dict(session_line("user", "private history copied from the parent",
-                          "2026-11-01T11:00:00.000Z"), forkedFrom=fork),
+    # history as forkedFrom lines; none of it may ship under the job id, even
+    # when the forkedFrom id itself is malformed (decided on structure).
+    bad_ids = ["parent-private-01", "short", "has.dot.in-it-1234", "a:b-colon-12345",
+               "p" * 129, "sess-1"]  # the last equals the line's own id
+    copies = [dict(session_line("user", f"private history copy {n}",
+                                "2026-11-01T11:00:00.000Z"),
+                   forkedFrom={"sessionId": sid, "messageUuid": "u-1"})
+              for n, sid in enumerate(bad_ids)]
+    job(env, session=copies + [
         session_line("assistant", "Found it: the middleware redirects early.",
-                     "2026-11-01T12:03:00.000Z"),
-    ])
+                     "2026-11-01T12:03:00.000Z")])
     assert jobs.run() == 0
     texts = [l["text"] for l in shipped_lines(env["landing"])]
-    assert not any("private history copied" in t for t in texts)
+    assert not any("private history copy" in t for t in texts)
     assert any("middleware redirects early" in t for t in texts)
