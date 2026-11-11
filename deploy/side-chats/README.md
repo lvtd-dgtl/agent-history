@@ -4,6 +4,15 @@ Claude desktop-app side chats write no transcript, so `hooks/side_chat_capture.p
 records them from a hook and the `claude-code-side` adapter indexes the result.
 Design and limits: `docs/design/side-chat-capture.md`.
 
+## Platform support
+
+Linux and WSL only. The hook finds the side-chat launch by reading
+`/proc/<pid>/cmdline` and `/proc/<pid>/stat`; native Windows and macOS have no
+`/proc`, so there it silently captures nothing (no error, no file). Whether
+the Claude desktop app's `claude` process on the MSI runs inside WSL is decided
+by the live test there: if it does, capture works; if it runs natively on
+Windows, it will not.
+
 ## What gets installed
 
 - `/usr/local/lib/agent-history/side_chat_capture.py` (the hook, stdlib only)

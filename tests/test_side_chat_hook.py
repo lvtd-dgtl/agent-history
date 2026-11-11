@@ -135,10 +135,17 @@ def test_existing_or_empty_transcript_writes_nothing(tmp_path):
 
 @pytest.mark.parametrize("bad", ["../../etc/x", "a/b", "", "x", "a" * 200, ".hidden-id",
                                  "/etc/passwd-abcdefgh", "..\\..\\evil-abcdefgh",
-                                 "abcdefgh\0../x", "C:\\evil\\abcdefgh", None, 12345678])
+                                 "abcdefgh\0../x", "abcdefgh\n", "abcdefgh\r\n", "C:\\evil\\abcdefgh", None, 12345678])
 def test_bad_session_id_writes_nothing(tmp_path, bad):
     assert not run(tmp_path, event(tmp_path, session_id=bad))
     assert not (tmp_path / ".claude").exists()
+
+
+@pytest.mark.parametrize("value", [PARENT + "\n", PARENT + "\r\n", "abcdefgh\n"])
+@pytest.mark.parametrize("form", ["split", "equals"])
+def test_parent_id_with_trailing_newline_is_no_parent(value, form):
+    args = ["--resume", value] if form == "split" else [f"--resume={value}"]
+    assert hook.side_chat_launch(chain(args), pid=50) == (True, None)
 
 
 def test_other_events_and_empty_text_are_ignored(tmp_path):

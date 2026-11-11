@@ -14,6 +14,7 @@ indexer, as for every adapter; the hook stores text verbatim.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -22,6 +23,9 @@ from ..textproc import MIN_CHARS, scrub
 from . import Record
 
 AGENT = "claude-code-side"
+# Same shape the capture hook accepts; files are written by another tool, so
+# a parent id that does not look like a session id is dropped, not linked.
+ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
 
 
 class SideChatAdapter:
@@ -62,7 +66,8 @@ class SideChatAdapter:
                 if not isinstance(session_id, str) or not session_id:
                     session_id = path.stem
                 parent = entry.get("parent_session_id")
-                if not isinstance(parent, str) or not parent or parent == session_id:
+                if (not isinstance(parent, str) or not ID_RE.fullmatch(parent)
+                        or parent == session_id):
                     parent = None
                 yield Record(
                     agent=AGENT,

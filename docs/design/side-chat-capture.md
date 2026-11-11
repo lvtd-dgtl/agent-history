@@ -43,6 +43,13 @@ CLAUDE_CODE_SESSION_ID and CLAUDE_PROJECT_DIR; a failing hook (exit 1) does
 not block the chat. Raw notes: `~/fleet/experiments/side-chat-hook-2026-11-09/FINDINGS.md`.
 
 ## Limits and unknowns
+- Linux and WSL only. The hook finds the side-chat launch by reading
+  `/proc/<pid>/cmdline` and `/proc/<pid>/stat`. On native Windows or macOS
+  there is no `/proc`, so it silently captures nothing (no error, no file).
+  The live test on the MSI decides whether the desktop app's `claude` process
+  runs inside WSL (then it works) or natively on Windows (then it does not,
+  and detection would need a different method). The detection logic is
+  unchanged; the hook's tests use a fake `/proc` and run on any OS.
 - Not tested with the real desktop launch; `CLAUDE_CODE_ENTRYPOINT` is
   recorded so the value can be checked (`claude-desktop` expected).
 - Whether a managed-settings drop-in loads under `--setting-sources=` is

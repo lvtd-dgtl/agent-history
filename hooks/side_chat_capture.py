@@ -20,7 +20,7 @@ import re
 import sys
 
 MAX_TEXT = 200 * 1024
-ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
+ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,127}")
 EVENTS = {"UserPromptSubmit": "user", "Stop": "assistant"}
 MAX_ANCESTORS = 4
 
@@ -56,7 +56,7 @@ def side_chat_launch(read=_read, pid: int | None = None):
                     value = arg[len("--resume="):]
                 else:
                     continue
-                return True, (value if ID_RE.match(value) else None)
+                return True, (value if ID_RE.fullmatch(value) else None)
             return True, None
         try:
             # /proc/<pid>/stat: "pid (comm) state ppid ..."; comm may hold spaces.
@@ -82,7 +82,7 @@ def capture(data: dict, home: str | None = None, read=_read,
     if not transcript or os.path.exists(transcript):
         return False  # normal session (or nothing to go on)
     session_id = data.get("session_id")
-    if not isinstance(session_id, str) or not ID_RE.match(session_id):
+    if not isinstance(session_id, str) or not ID_RE.fullmatch(session_id):
         return False
     # A new normal session can fire its first prompt before its transcript
     # exists, so the missing file alone is not proof: require the launch
