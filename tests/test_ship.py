@@ -378,7 +378,7 @@ def test_wire_labels_are_capped_redacted_and_never_self_forks(transcripts, hub):
             attributionAgent=f"type-{GH}")])
     ship.run()
     (rec,) = shipped(hub)
-    assert "agent_id" not in rec  # over the hub's 64 character cap: dropped
+    assert "agent_id" not in rec  # over the hub's cap: the adapter drops it first (the wire check has its own test)
     assert GH not in rec["agent_type"] and "[REDACTED:github_token]" in rec["agent_type"]
     selfish = {"v": 1, "agent": "claude-code", "origin": "/o", "session_id": "s",
                "text": "a line forking itself", "fork_of": "s"}
@@ -403,18 +403,22 @@ def test_backfill_looks_up_each_fork_parent_once(transcripts, fake_embed, hub,
     assert len(calls) == len(set(calls))
 
 
-def test_wire_labels_follow_the_hub_charset_and_cap(transcripts, hub):
-    # 65 characters is over the hub's cap, and a space is not in the id charset.
-    transcripts("proj/p/subagents", "agent-x", [
-        msg("assistant", "subagent line with an id of 65 characters here",
-            session="p", isSidechain=True, agentId="a" * 65,
-            attributionAgent="b" * 64),
-        msg("assistant", "subagent line with a spaced id and a typed label",
-            session="p", isSidechain=True, agentId="a b",
-            attributionAgent="job/researcher 2")])
-    ship.run()
-    got = {r["text"].split(" with ")[1]: r for r in shipped(hub)}
-    first = got["an id of 65 characters here"]
-    assert "agent_id" not in first and first["agent_type"] == "b" * 64
-    second = got["a spaced id and a typed label"]
-    assert "agent_id" not in second and second["agent_type"] == "job/researcher 2"
+def test_wire_labels_follow_the_hub_charset_and_cap(tmp_path):
+    # Straight into Batches.add: the adapter also cleans these values, so only
+    # a direct call proves the wire layer does its own shape check.
+    state = ship.State.open(writable=True)
+    batches = ship.Batches(state, tmp_path, dry_run=False)
+    batches.add(agent="claude-code", origin="/o", session_id="s1",
+                cwd="/w", timestamp="2026-01-01T00:00:00Z", role="user",
+                text="line with bad labels", agent_id="a" * 65,
+                agent_type="bad\nchar", fork_of="short")
+    batches.add(agent="claude-code", origin="/o", session_id="s1",
+                cwd="/w", timestamp="2026-01-01T00:00:01Z", role="user",
+                text="line with good labels", agent_id="a" * 64,
+                agent_type="job/researcher 2", fork_of="parent-session-01")
+    lines = [json.loads(l) for _, l in batches.pending]
+    bad, good = lines
+    assert not {"agent_id", "agent_type", "fork_of"} & set(bad)
+    assert good["agent_id"] == "a" * 64
+    assert good["agent_type"] == "job/researcher 2"
+    assert good["fork_of"] == "parent-session-01"

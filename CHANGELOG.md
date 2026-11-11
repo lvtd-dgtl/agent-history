@@ -28,12 +28,15 @@ they have no corresponding tags.
   include the fields. They ship as optional wire keys (format stays 1). Lines a
   forked session copied from its parent (`forkedFrom`) are no longer indexed
   under the fork when the parent's own transcript is indexed too (when it is
-  not, or it is empty or unreadable, they are kept: they are the only copy; `ship-jobs` never ships copied lines under a job); the fork is linked to its parent in session metadata
+  not, or it is empty or unreadable, they are kept: they are the only copy; `ship-jobs` drops `forkedFrom`-tagged copies; a job that records the resumed parent's own session id in `job.json` still ships that parent's own transcript, as plain `--resume` did before this change); the fork is linked to its parent in session metadata
   (`fork_of` / `forks`) instead.
   A fork with no new turns yet has no chunks of its own, so no link is
   recorded until its first new turn is indexed (a link would need an empty
   session row that listings would show). `ship-jobs` ships the subagent
-  labels too. The labels on the wire are checked against the hub's rules (64 characters of letters, digits and `._:@-`, plus `/` and space for types) and redacted.
+  labels too. Accepted, untested risks (privacy over completeness): a fork's
+  copies are dropped when the parent is only partly truncated but still has at
+  least one own entry, and a forked job's copied history reaches no session
+  when the parent is never shipped from the job box. The labels on the wire are checked against the hub's rules (64 characters of letters, digits and `._:@-`, plus `/` and space for types) and redacted.
 - **`agent-history relabel [--apply]`**: fills `agent_id` and `sidechain` on
   subagent chunks indexed before labels existed, from the
   `.../subagents/agent-<id>.jsonl` origin, and `agent_type` when that file

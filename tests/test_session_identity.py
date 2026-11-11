@@ -603,16 +603,30 @@ def test_a_locked_database_is_reported_once_per_pass_and_skipped(transcripts, fa
     assert err.count("database is locked") == 2
 
 
-def test_an_unexpected_error_in_a_fork_link_is_not_swallowed(transcripts,
-                                                             fake_embed,
-                                                             monkeypatch):
+def test_an_unexpected_error_in_a_fork_link_is_loud_but_never_blocks_indexing(
+        transcripts, fake_embed, monkeypatch, capsys):
     transcripts("proj", "child-1", [
         msg("user", "a new direction after branching off", session="child-1",
             forkedFrom={"sessionId": "parent-01", "messageUuid": "u"})])
     monkeypatch.setattr(sessions, "link_fork",
                         lambda *a, **k: (_ for _ in ()).throw(KeyError("x")))
-    with pytest.raises(KeyError):
-        index.run()
+    assert index.run() == 0
+    err = capsys.readouterr().err
+    assert "ERROR in a fork link" in err and "KeyError" in err
+    assert store.open_for_read().execute(
+        "SELECT count(*) FROM chunks").fetchone()[0] == 1
+
+
+def test_an_aliasless_record_does_not_shadow_a_later_aliased_one(inbox, fake_embed):
+    claimed = sessions.derive_uid("claude-code", "laptop", SID)
+    drop(inbox, "laptop",
+         {"text": "first line, a fork-only record without aliases",
+          "session_uid": claimed, "fork_of": "parent-session-01"},
+         {"text": "second line of the same session carrying the link",
+          "session_uid": claimed, "aliases": [["cse", f"cse_{SUFFIX}"]]})
+    index.run()
+    db = store.open_for_read()
+    assert sessions.resolve_session(db, f"session_{SUFFIX}") == claimed
 
 
 def test_one_bad_fork_link_does_not_abort_the_run(transcripts, fake_embed,
