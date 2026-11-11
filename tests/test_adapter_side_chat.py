@@ -27,6 +27,10 @@ def side(isolated_env):
     return _write
 
 
+needs_ext = pytest.mark.skipif(not store.extensions_supported(),
+                               reason="this Python cannot load SQLite extensions")
+
+
 def line(role, text, parent=PARENT, session=SIDE, **extra):
     d = {"v": 1, "session_id": session, "parent_session_id": parent,
          "cwd": "/work", "timestamp": "2026-11-09T10:00:00.000Z",
@@ -65,6 +69,7 @@ def test_min_chars_bad_lines_and_no_parent(side):
     assert len(got) == 1 and got[0].fork_of is None
 
 
+@needs_ext
 def test_secrets_are_redacted_at_ingest(side, fake_embed, monkeypatch):
     monkeypatch.setenv("AGENT_HISTORY_REDACT", "on")
     secret = "sk-ant-api03-" + "A1b2C3d4" * 6
@@ -75,6 +80,7 @@ def test_secrets_are_redacted_at_ingest(side, fake_embed, monkeypatch):
     assert texts and all(secret not in t for t in texts)
 
 
+@needs_ext
 def test_side_chat_links_to_claude_code_parent(side, transcripts, fake_embed):
     transcripts("proj", PARENT, [msg("user", "the main conversation about caching",
                                      session=PARENT)])

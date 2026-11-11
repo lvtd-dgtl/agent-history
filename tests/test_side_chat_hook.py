@@ -115,6 +115,11 @@ def test_missing_transcript_writes_both_roles(tmp_path):
     assert first["entrypoint"] == "claude-desktop"
     assert first["text"] == "a side question about caching"
     assert first["timestamp"].endswith("Z")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows has no POSIX mode bits")
+def test_files_are_private_on_posix(tmp_path):
+    assert run(tmp_path, event(tmp_path))
     d = tmp_path / ".claude/side-chats"
     assert oct(d.stat().st_mode & 0o777) == "0o700"
     assert oct((d / f"{SID}.jsonl").stat().st_mode & 0o777) == "0o600"
@@ -128,7 +133,9 @@ def test_existing_or_empty_transcript_writes_nothing(tmp_path):
     assert not (tmp_path / ".claude").exists()
 
 
-@pytest.mark.parametrize("bad", ["../../etc/x", "a/b", "", "x", "a" * 200, ".hidden-id"])
+@pytest.mark.parametrize("bad", ["../../etc/x", "a/b", "", "x", "a" * 200, ".hidden-id",
+                                 "/etc/passwd-abcdefgh", "..\\..\\evil-abcdefgh",
+                                 "abcdefgh\0../x", "C:\\evil\\abcdefgh", None, 12345678])
 def test_bad_session_id_writes_nothing(tmp_path, bad):
     assert not run(tmp_path, event(tmp_path, session_id=bad))
     assert not (tmp_path / ".claude").exists()
