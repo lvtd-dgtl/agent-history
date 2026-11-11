@@ -185,8 +185,17 @@ def link_fork(db: sqlite3.Connection, child: str, parent: str) -> None:
     A fork is a relative, not the same conversation, so it lives in both
     sessions' metadata (``fork_of`` on the child, ``forks`` on the parent)
     rather than in the alias table. Hook for adapters that see forks; none
-    does yet.
+    does yet. A child already linked to a different parent keeps it (a real
+    fork beats a parent named in a brief).
     """
+    row = db.execute("SELECT meta FROM sessions WHERE uid = ?",
+                     (child,)).fetchone()
+    try:
+        current = json.loads(row[0] or "{}").get("fork_of") if row else None
+    except ValueError:
+        current = None
+    if current and current != parent:
+        return
     update_meta(db, child, fork_of=parent)
     row = db.execute("SELECT meta FROM sessions WHERE uid = ?",
                      (parent,)).fetchone()

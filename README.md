@@ -819,6 +819,35 @@ older shippers, which carry no uid, are derived the same way. An existing index
 is upgraded in place on first open (columns and tables added, uids backfilled
 in one pass, nothing re-embedded or deleted).
 
+### Linking a fresh-context session to its parent
+
+A session started by Claude desktop's `start_session` tool begins with empty
+context, so its transcript has no `forkedFrom` and nothing ties it to the
+session that started it. To link it, make the **first line of the first user
+message** (the brief) exactly:
+
+```
+Parent session id: <session id>
+```
+
+The id is the parent's 36-character lowercase UUID (what `claude --resume`
+takes). The prefix is case-sensitive, with one space after the colon and
+nothing else on the line; trailing whitespace, CRLF and a leading BOM are
+tolerated. Example:
+
+```
+Parent session id: 0b6a5a8e-1111-4222-8333-944455556666
+Research the billing bug and report back.
+```
+
+The link is stored like a fork (`fork_of` on the child, `forks` on the
+parent), and is applied later if the parent is indexed after the child. Only
+that one line counts: a later message, a line further down, a quote in an
+assistant reply or tool output, a malformed id, the session's own id, and
+subagent files are all ignored. A real `forkedFrom` link always wins. The
+line stays in the indexed text as usual (redacted like any other text).
+**The fleet's briefs for `start_session` should begin with this line.**
+
 ## How indexing works
 
 ```

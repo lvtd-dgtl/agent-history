@@ -631,3 +631,60 @@ def test_relabel_previews_then_fills_old_subagent_chunks(transcripts, fake_embed
         "SELECT agent_id, agent_type, sidechain FROM chunks WHERE origin LIKE '%agent-a74d%'"
     ).fetchone()
     assert row == ("a74d", None, 1)
+
+
+# ---------------------------------------- brief convention: parent session id
+
+def _ids(n):
+    return [f"{i:08x}-1111-4222-8333-444444444444" for i in range(1, n + 1)]
+
+
+def _meta(db, sid):
+    uid = sessions.derive_uid("claude-code", "testbox", sid)
+    return json.loads(db.execute("SELECT meta FROM sessions WHERE uid = ?",
+                                 (uid,)).fetchone()[0])
+
+
+def test_brief_parent_links_even_when_it_is_indexed_later(transcripts, fake_embed):
+    parent, child = _ids(2)
+    transcripts("proj", child, [msg(
+        "user", f"Parent session id: {parent}\nresearch the billing bug", session=child)])
+    index.run()  # parent not indexed yet: no error, link applied on arrival
+    transcripts("proj", parent, [msg("user", "the original question", session=parent)])
+    index.run()
+    db = store.open_for_read()
+    assert _meta(db, child)["fork_of"] == sessions.derive_uid(
+        "claude-code", "testbox", parent)
+    assert _meta(db, parent)["forks"] == [sessions.derive_uid(
+        "claude-code", "testbox", child)]
+
+
+def test_brief_cycle_does_not_hang_and_a_real_fork_is_not_overwritten(
+        transcripts, fake_embed, capsys):
+    a, b, c = _ids(3)
+    transcripts("proj", a, [msg("user", f"Parent session id: {b}\nfrom a", session=a)])
+    transcripts("proj", b, [msg("user", f"Parent session id: {a}\nfrom b", session=b)])
+    fork = {"sessionId": c, "messageUuid": "u"}
+    transcripts("proj", "d", [
+        msg("user", "copied from the parent line", session="d", forkedFrom=fork),
+        msg("user", f"Parent session id: {a}\nnew turn here", session="d")])
+    index.run()
+    index.run()
+    db = store.open_for_read()
+    uid = lambda s: sessions.derive_uid("claude-code", "testbox", s)
+    assert _meta(db, a)["fork_of"] == uid(b)
+    assert _meta(db, b)["fork_of"] == uid(a)
+    assert _meta(db, "d")["fork_of"] == uid(c)  # forkedFrom wins
+
+
+def test_link_fork_keeps_an_existing_different_parent(fake_embed):
+    db, _ = store.open_for_write()
+    uid = lambda s: sessions.derive_uid("claude-code", "m", s)
+    for sid in ("a", "b", "c"):
+        sessions.register_session(db, uid(sid), agent="claude-code", machine="m",
+                                  session_id=sid, origin="/x")
+    sessions.link_fork(db, uid("a"), uid("b"))
+    sessions.link_fork(db, uid("a"), uid("c"))
+    meta = json.loads(db.execute("SELECT meta FROM sessions WHERE uid = ?",
+                                 (uid("a"),)).fetchone()[0])
+    assert meta["fork_of"] == uid("b")
