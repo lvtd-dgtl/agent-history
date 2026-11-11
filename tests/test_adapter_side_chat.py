@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 import pytest
@@ -102,6 +103,8 @@ def test_side_chat_links_to_claude_code_parent(side, transcripts, fake_embed):
 
 
 @pytest.mark.parametrize("bad", ["../../etc/passwd", "a/b/c/d/e/f/g/h", "x", "a" * 200,
+                                 "abcdefgh", "E18E5130-5211-4D3C-8162-ADDD565DD983",
+                                 PARENT[:-1], PARENT + "0",
                                  PARENT + "\n", "abcdefgh\0x", " " + PARENT, 12345678,
                                  ["list"], {"a": 1}, True])
 def test_parent_with_bad_shape_is_dropped_not_linked(side, bad):
@@ -116,18 +119,20 @@ def test_parent_equal_to_session_is_dropped(side):
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_symlinked_files_do_not_crash(side, isolated_env):
+def test_symlinked_files_are_skipped(side, isolated_env):
     root = isolated_env / "side-chats"
     side(SIDE, [line("user", "a long enough question here")])
     (root / "dangling.jsonl").symlink_to(root / "nowhere.jsonl")
     (root / "loop.jsonl").symlink_to(root / "loop.jsonl")
     (root / "adir.jsonl").symlink_to(isolated_env)  # a directory
+    # a symlink to a perfectly valid capture file is skipped too
+    (root / "bbbbbbbb-1111-4222-8333-444455556666.jsonl").symlink_to(root / f"{SIDE}.jsonl")
     got = list(SideChatAdapter().records())
     assert [r.session_id for r in got] == [SIDE]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlinks need privileges on Windows")
-def test_symlink_to_non_jsonl_content_yields_nothing(side, isolated_env):
+def test_symlink_to_other_content_yields_nothing(side, isolated_env):
     root = isolated_env / "side-chats"
     side(SIDE, [line("user", "a long enough question here")])
     other = isolated_env / "secret.txt"
@@ -192,3 +197,102 @@ def test_existing_different_parent_is_kept_and_same_parent_links(side, transcrip
     assert m(c)["fork_of"] == p and "forks" not in m(o)
     sessions.link_fork(wdb, c, p)  # same parent again is a no-op
     assert m(p)["forks"] == [c]
+
+
+def test_line_must_speak_for_its_own_file(side):
+    other = "bbbbbbbb-1111-4222-8333-444455556666"
+    side(SIDE, [line("user", "a genuine question about the cache"),
+                line("user", "forged: claims to be another session", session=other),
+                line("user", "forged: bad id shape here", session="../../x"),
+                {k: v for k, v in line("user", "no session id at all here").items()
+                 if k != "session_id"}])
+    got = list(SideChatAdapter().records())
+    assert [(r.session_id, r.text[:7]) for r in got] == [(SIDE, "a genuin")]
+
+
+def test_long_cwd_and_timestamp_are_capped(side):
+    side(SIDE, [line("user", "a long enough question here", cwd="c" * 100000,
+                     timestamp="t" * 1000)])
+    r = list(SideChatAdapter().records())[0]
+    assert len(r.cwd) == 4096 and r.timestamp == ""
+
+
+def test_text_is_capped_at_200kb(side):
+    side(SIDE, [line("user", "z" * (400 * 1024))])
+    assert len(list(SideChatAdapter().records())[0].text) <= 200 * 1024
+
+
+def test_deeply_nested_json_line_is_skipped_not_fatal(side):
+    path = side(SIDE, [line("user", "a long enough question here")])
+    with path.open("ab") as f:
+        f.write(b"[" * 200000 + b"]" * 200000 + b"\n")
+        f.write(b'{"a":' * 100000 + b"1" + b"}" * 100000 + b"\n")
+        f.write(json.dumps(line("assistant", "a good line after the deep ones")).encode() + b"\n")
+    got = list(SideChatAdapter().records())
+    assert [r.role for r in got] == ["user", "assistant"]
+
+
+def test_overlong_line_is_skipped_without_losing_the_next(side):
+    path = side(SIDE, [])
+    with path.open("ab") as f:
+        f.write(b'{"v":1,"text":"' + b"y" * (3 * 1024 * 1024) + b'"}\n')
+        f.write(json.dumps(line("user", "the line right after the huge one")).encode() + b"\n")
+    got = list(SideChatAdapter().records())
+    assert [r.text for r in got] == ["the line right after the huge one"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="no FIFOs on Windows")
+def test_fifo_named_jsonl_does_not_hang(side, isolated_env):
+    import signal
+    root = isolated_env / "side-chats"
+    side(SIDE, [line("user", "a long enough question here")])
+    os.mkfifo(root / "aaaaaaaa-1111-4222-8333-444455556666.jsonl")
+    signal.alarm(10)  # a blocking open would hang here; fail instead
+    try:
+        got = list(SideChatAdapter().records())
+    finally:
+        signal.alarm(0)
+    assert [r.session_id for r in got] == [SIDE]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX ownership")
+def test_file_owned_by_someone_else_is_skipped(side, monkeypatch):
+    side(SIDE, [line("user", "a long enough question here")])
+    monkeypatch.setattr(os, "getuid", lambda: os.stat(".").st_uid + 12345)
+    assert list(SideChatAdapter().records()) == []
+
+
+@needs_ext
+def test_hub_shipper_machine_cannot_link_into_another_machines_session(
+        tmp_path, monkeypatch, fake_embed):
+    """A claude-code-side record shipped by machine A names PARENT, which is
+    machine B's session. The parent uid is derived with the shipper's machine,
+    so B's session must not gain A's child as a fork."""
+    inbox = tmp_path / "inbox"
+    monkeypatch.setenv("AGENT_HISTORY_INBOX", str(inbox))
+    monkeypatch.setenv("AGENT_HISTORY_HUB", "1")
+
+    def drop(machine, rec):
+        d = inbox / machine
+        d.mkdir(parents=True, exist_ok=True)
+        base = {"v": 1, "cwd": "/w", "timestamp": "2026-11-09T10:00:00Z"}
+        (d / "b1.jsonl").write_text(json.dumps({**base, **rec}) + "\n")
+    drop("machine-b", {"agent": "claude-code", "origin": "/h/p.jsonl",
+                       "session_id": PARENT, "role": "user",
+                       "text": "machine B's own main conversation text"})
+    drop("machine-a", {"agent": "claude-code-side", "origin": "/h/s.jsonl",
+                       "session_id": SIDE, "role": "user", "fork_of": PARENT,
+                       "text": "machine A's side chat about something"})
+    index.run()
+    db = store.open_for_read()
+    b_parent = sessions.derive_uid("claude-code", "machine-b", PARENT)
+    a_child = sessions.derive_uid("claude-code-side", "machine-a", SIDE)
+
+    def meta(uid):
+        row = db.execute("SELECT meta FROM sessions WHERE uid = ?", (uid,)).fetchone()
+        assert row is not None, uid
+        return json.loads(row[0] or "{}")
+    assert "forks" not in meta(b_parent)
+    # it links within its own machine's namespace only (that parent is absent)
+    assert meta(a_child).get("fork_of") in (
+        None, sessions.derive_uid("claude-code", "machine-a", PARENT))

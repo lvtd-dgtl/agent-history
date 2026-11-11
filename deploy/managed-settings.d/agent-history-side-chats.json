@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -I /usr/local/lib/agent-history/side_chat_capture.py",
+            "command": "[ -r /usr/local/lib/agent-history/side_chat_capture.py ] && python3 -I /usr/local/lib/agent-history/side_chat_capture.py >/dev/null 2>&1; exit 0",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -I /usr/local/lib/agent-history/side_chat_capture.py",
+            "command": "[ -r /usr/local/lib/agent-history/side_chat_capture.py ] && python3 -I /usr/local/lib/agent-history/side_chat_capture.py >/dev/null 2>&1; exit 0",
             "timeout": 5
           }
         ]

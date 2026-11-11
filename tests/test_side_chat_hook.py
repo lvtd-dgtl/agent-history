@@ -158,14 +158,291 @@ def test_text_is_capped(tmp_path):
     assert len(lines(tmp_path)[0]["text"]) == hook.MAX_TEXT
 
 
-def test_script_exits_zero_on_garbage_and_writes_for_real(tmp_path):
+def test_script_exits_zero_on_garbage(tmp_path):
     env = {**os.environ, "HOME": str(tmp_path)}
-    for stdin in ("not json", "", "[1]"):
+    for stdin in ("not json", "", "[1]", "\udcff\x00{"):
         r = subprocess.run([sys.executable, "-I", str(HOOK)], input=stdin,
                            text=True, env=env, capture_output=True)
         assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
-    # real run: this pytest process is no side chat, so nothing is written
-    r = subprocess.run([sys.executable, "-I", str(HOOK)], text=True, env=env,
-                       input=json.dumps(event(tmp_path)), capture_output=True)
-    assert r.returncode == 0
+    r = subprocess.run([sys.executable, "-I", str(HOOK)], input=b"\xff\xfe{",
+                       env=env, capture_output=True)
+    assert r.returncode == 0 and r.stdout == b"" and r.stderr == b""
+    assert not (tmp_path / ".claude").exists()
+
+
+# --- H1: the managed-settings command can never block a prompt ---------------
+
+DROPIN = (Path(__file__).resolve().parent.parent / "deploy" / "managed-settings.d"
+          / "agent-history-side-chats.json")
+INSTALLED = "/usr/local/lib/agent-history/side_chat_capture.py"
+
+
+def dropin_commands():
+    data = json.loads(DROPIN.read_text())  # also proves the JSON is valid
+    return [h["command"] for event in ("UserPromptSubmit", "Stop")
+            for group in data["hooks"][event] for h in group["hooks"]]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the command is a POSIX shell line")
+def test_dropin_command_exits_zero_when_script_is_missing(tmp_path):
+    """A missing script made `python3 -I` exit 2, which Claude Code treats as
+    blocking: every prompt on the machine would be rejected."""
+    cmds = dropin_commands()
+    assert len(cmds) == 2 and all(INSTALLED in c for c in cmds)
+    for cmd in cmds:
+        missing = cmd.replace(INSTALLED, str(tmp_path / "nope.py"))
+        assert missing != cmd
+        r = subprocess.run(missing, shell=True, input="{}", text=True,
+                           capture_output=True)
+        assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+        # and exactly as shipped, whether or not the script is installed here
+        r = subprocess.run(cmd, shell=True, input="{}", text=True, capture_output=True)
+        assert r.returncode == 0 and r.stdout == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the command is a POSIX shell line")
+def test_dropin_command_exits_zero_with_real_script_on_garbage_stdin(tmp_path):
+    for cmd in dropin_commands():
+        real = cmd.replace(INSTALLED, str(HOOK))
+        for stdin in ("not json", "", "[1]", '{"hook_event_name": "Stop"}'):
+            r = subprocess.run(real, shell=True, input=stdin, text=True,
+                               capture_output=True, env={**os.environ, "HOME": str(tmp_path)})
+            assert (r.returncode, r.stdout, r.stderr) == (0, "", "")
+        # a script that crashes outright must not block either
+        bad = tmp_path / "crash.py"
+        bad.write_text("import sys; sys.exit(2)\n")
+        r = subprocess.run(cmd.replace(INSTALLED, str(bad)), shell=True, text=True,
+                           input="{}", capture_output=True)
+        assert r.returncode == 0 and r.stdout == ""
+
+
+# --- H2: only the nearest claude process decides -----------------------------
+
+OUTER = ["claude", "-p", "--fork-session", "--no-session-persistence", "--resume", PARENT]
+
+
+def test_normal_claude_nested_under_a_side_chat_run_is_not_captured(tmp_path):
+    nested = fake_proc({
+        60: (50, ["/bin/sh", "-c", "hook"]),
+        50: (40, ["/usr/bin/claude", "--model", "opus"]),   # the session's own claude
+        40: (1, OUTER),                                      # an outer fork run above it
+    })
+    assert hook.side_chat_launch(nested, pid=60) == (False, None)
+    assert not run(tmp_path, event(tmp_path), read=nested, ppid=60)
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_nearest_claude_with_flags_still_wins_over_a_plain_one_above(tmp_path):
+    chain2 = fake_proc({
+        60: (50, ["/bin/sh", "-c", "hook"]),
+        50: (40, ["/opt/claude/bin/claude", *OUTER[1:]]),
+        40: (1, ["claude", "--model", "opus"]),
+    })
+    assert hook.side_chat_launch(chain2, pid=60) == (True, PARENT)
+
+
+def test_node_run_claude_is_recognised():
+    r = fake_proc({60: (50, ["sh"]), 50: (1, ["node", "/x/bin/claude", *OUTER[1:]])})
+    assert hook.side_chat_launch(r, pid=60) == (True, PARENT)
+
+
+def test_short_resume_flag_gives_the_parent():
+    r = fake_proc({50: (1, ["claude", "--fork-session", "--no-session-persistence",
+                            "-r", PARENT])})
+    assert hook.side_chat_launch(r, pid=50) == (True, PARENT)
+
+
+def test_paren_in_comm_name_does_not_break_the_ppid_parse():
+    def read(path):
+        pid, name = path.split("/")[2:]
+        if name == "cmdline":
+            return b"\0".join(a.encode() for a in (
+                ["sh"] if pid == "60" else OUTER)) + b"\0"
+        return b"60 (evil) S 1 (x) y) S 50 0 0" if pid == "60" else b"1 (claude) S 1 0"
+    assert hook.side_chat_launch(read, pid=60) == (True, PARENT)
+
+
+def test_self_parent_cycle_ends_and_is_not_a_side_chat():
+    loop = fake_proc({50: (50, ["sh", "-c", "x"])})
+    assert hook.side_chat_launch(loop, pid=50) == (False, None)
+    two = fake_proc({50: (40, ["sh"]), 40: (50, ["sh"])})
+    assert hook.side_chat_launch(two, pid=50) == (False, None)
+
+
+def test_stat_failing_after_cmdline_succeeded_is_not_a_side_chat():
+    def read(path):
+        if path.endswith("/cmdline"):
+            return b"sh\0-c\0hook\0"
+        raise OSError("process vanished")
+    assert hook.side_chat_launch(read, pid=50) == (False, None)
+
+
+@pytest.mark.parametrize("raw", [b"", b"\0", b"\0\0"])
+def test_empty_cmdline_is_not_a_side_chat(raw):
+    def read(path):
+        if path.endswith("/cmdline"):
+            return raw
+        return b"50 (x) S 40 0"
+    assert hook.side_chat_launch(read, pid=50) == (False, None)
+
+
+# --- H3: entrypoint gate and opt-out -----------------------------------------
+
+def test_headless_sdk_entrypoint_captures_nothing_even_with_both_flags(tmp_path):
+    assert not run(tmp_path, event(tmp_path), env={"CLAUDE_CODE_ENTRYPOINT": "sdk-cli"})
+    assert not run(tmp_path, event(tmp_path), env={})
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_desktop_entrypoint_captures(tmp_path):
+    assert run(tmp_path, event(tmp_path), env={"CLAUDE_CODE_ENTRYPOINT": "claude-desktop"})
+
+
+def test_entrypoint_override_for_the_live_test(tmp_path):
+    env = {"CLAUDE_CODE_ENTRYPOINT": "sdk-cli",
+           "AGENT_HISTORY_SIDE_CHAT_ENTRYPOINTS": "claude-desktop, sdk-cli"}
+    assert run(tmp_path, event(tmp_path), env=env)
+    # the override replaces the default rather than adding to it
+    env = {"CLAUDE_CODE_ENTRYPOINT": "claude-desktop",
+           "AGENT_HISTORY_SIDE_CHAT_ENTRYPOINTS": "something-else"}
+    assert not run(tmp_path, event(tmp_path), env=env)
+
+
+@pytest.mark.parametrize("value", ["off", "OFF", "0", "false"])
+def test_opt_out_env_stops_capture(tmp_path, value):
+    env = {"CLAUDE_CODE_ENTRYPOINT": "claude-desktop", "AGENT_HISTORY_SIDE_CHATS": value}
+    assert not run(tmp_path, event(tmp_path), env=env)
+    assert not (tmp_path / ".claude").exists()
+
+
+def test_opt_out_marker_file_stops_capture_and_is_not_created_by_the_check(tmp_path):
+    d = tmp_path / ".claude/side-chats"
+    d.mkdir(parents=True)
+    (d / ".disabled").write_text("")
+    assert not run(tmp_path, event(tmp_path))
+    assert not (d / f"{SID}.jsonl").exists()
+    (d / ".disabled").unlink()
+    assert run(tmp_path, event(tmp_path))
+
+
+def test_checking_the_gate_does_not_create_the_directory(tmp_path):
+    assert hook.enabled({"CLAUDE_CODE_ENTRYPOINT": "claude-desktop"}, str(tmp_path))
+    assert not (tmp_path / ".claude").exists()
+
+
+# --- H5: file safety ----------------------------------------------------------
+
+posix = pytest.mark.skipif(sys.platform == "win32", reason="POSIX files only")
+
+
+@posix
+def test_symlinked_capture_file_is_not_followed(tmp_path):
+    d = tmp_path / ".claude/side-chats"
+    d.mkdir(parents=True)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    (d / f"{SID}.jsonl").symlink_to(victim)
+    assert not run(tmp_path, event(tmp_path))
+    assert victim.read_text() == "keep"
+
+
+@posix
+def test_symlinked_directory_is_not_followed(tmp_path):
+    (tmp_path / ".claude").mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (tmp_path / ".claude/side-chats").symlink_to(elsewhere)
+    assert not run(tmp_path, event(tmp_path))
+    assert list(elsewhere.iterdir()) == []
+
+
+@posix
+def test_hardlinked_capture_file_is_refused(tmp_path):
+    d = tmp_path / ".claude/side-chats"
+    d.mkdir(parents=True)
+    target = tmp_path / "other.txt"
+    target.write_text("keep")
+    os.link(target, d / f"{SID}.jsonl")
+    assert not run(tmp_path, event(tmp_path))
+    assert target.read_text() == "keep"
+
+
+@posix
+def test_loose_modes_are_tightened(tmp_path):
+    d = tmp_path / ".claude/side-chats"
+    d.mkdir(parents=True)
+    d.chmod(0o755)
+    f = d / f"{SID}.jsonl"
+    f.write_text("")
+    f.chmod(0o644)
+    assert run(tmp_path, event(tmp_path))
+    assert oct(d.stat().st_mode & 0o777) == "0o700"
+    assert oct(f.stat().st_mode & 0o777) == "0o600"
+
+
+def test_lone_surrogate_in_text_does_not_drop_the_turn(tmp_path):
+    assert run(tmp_path, event(tmp_path, prompt="before \ud800 after", hook_event_name="UserPromptSubmit"))
+    assert lines(tmp_path)[0]["text"].startswith("before ")
+    assert lines(tmp_path)[0]["text"].endswith(" after")
+
+
+def test_a_turn_is_written_with_a_single_write(tmp_path, monkeypatch):
+    calls = []
+    real = os.write
+    monkeypatch.setattr(os, "write", lambda fd, b: (calls.append(b), real(fd, b))[1])
+    assert run(tmp_path, event(tmp_path))
+    assert len(calls) == 1 and calls[0].endswith(b"\n")
+
+
+# --- H6: parent id shape -------------------------------------------------------
+
+@pytest.mark.parametrize("bad", ["abcdefgh", "ABCDEF12-1111-4222-8333-444455556666",
+                                 PARENT[:-1], PARENT + "0", "../../etc/passwd",
+                                 "e18e5130-5211-4d3c-8162-addd565dd98g"])
+def test_parent_must_be_a_lowercase_uuid(bad):
+    for args in (["--resume", bad], [f"--resume={bad}"], ["-r", bad]):
+        assert hook.side_chat_launch(chain(args), pid=50) == (True, None)
+
+
+# --- H4: a real /proc, no fakes -------------------------------------------------
+
+needs_proc = pytest.mark.skipif(
+    not (sys.platform.startswith("linux") and os.path.isdir("/proc/self")
+         and __import__("shutil").which("bash")),
+    reason="needs Linux /proc and bash")
+
+CHILD = (
+    "import json,os,subprocess,sys\n"
+    "r=subprocess.run([sys.executable,'-I',sys.argv[1]],input=os.environ['EVT'],"
+    "text=True,capture_output=True)\n"
+    "sys.exit(r.returncode)\n")
+
+
+def _run_under(tmp_path, claude_args, env_extra=None):
+    """Run the hook as a child of a process whose argv looks like claude's."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith(
+        ("CLAUDE", "AGENT_HISTORY"))}
+    env.update(HOME=str(tmp_path), CLAUDE_CODE_ENTRYPOINT="claude-desktop",
+               EVT=json.dumps(event(tmp_path)), **(env_extra or {}))
+    # `exec -a claude` makes argv[0] "claude", as the real launch has.
+    return subprocess.run(
+        ["bash", "-c", 'exec -a claude "$0" -c "$1" "$2" "${@:3}"',
+         sys.executable, CHILD, str(HOOK), *claude_args],
+        env=env, capture_output=True, text=True)
+
+
+@needs_proc
+def test_real_proc_side_chat_launch_is_captured_with_its_parent(tmp_path):
+    r = _run_under(tmp_path, ["--fork-session", "--no-session-persistence",
+                              f"--resume={PARENT}"])
+    assert r.returncode == 0, r.stderr
+    assert lines(tmp_path)[0]["parent_session_id"] == PARENT
+
+
+@needs_proc
+def test_real_proc_plain_claude_is_not_captured_wherever_pytest_runs(tmp_path):
+    """Robust when pytest itself runs under a side-chat claude: the nearest
+    claude (this child, with no flags) decides, not anything above it."""
+    r = _run_under(tmp_path, ["--model", "opus"])
+    assert r.returncode == 0, r.stderr
     assert not (tmp_path / ".claude").exists()
