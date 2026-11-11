@@ -191,15 +191,17 @@ def _link_forks(db: sqlite3.Connection, links: dict, uids: _Uids) -> None:
     has no session row until its chunks are written, and `link_fork` can
     only update the parent's `forks` once that row exists. (A stub row would
     show up as a bogus empty session, so the link is applied late instead.)
-    The parent is the same agent and machine; its uid is derived the way the
-    child's was. Re-applying is a no-op.
+    The parent is on the same machine and normally the same agent (a side
+    chat's parent is a `claude-code` session: sessions.fork_parent_agent);
+    its uid is derived the way the child's was. Re-applying is a no-op.
     """
     for record in links.values():
         if not record.fork_of or record.fork_of == record.session_id:
             continue
         try:  # one bad link must not abort the run
             sessions.link_fork(db, uids(record), sessions.uid_for(
-                db, record.agent, record.machine, record.fork_of, None))
+                db, sessions.fork_parent_agent(record.agent), record.machine,
+                record.fork_of, None))
         except Exception as exc:
             print(f"  skipped a fork link: {type(exc).__name__}: {exc}",
                   file=sys.stderr)

@@ -376,6 +376,17 @@ def codex_session_dirs() -> list[Path]:
     return dirs
 
 
+def side_chat_dirs() -> list[Path]:
+    """Where the side-chat capture hook writes (hooks/side_chat_capture.py).
+
+    AGENT_HISTORY_SIDE_CHAT_DIRS is an os.pathsep-separated list.
+    """
+    explicit = _env("AGENT_HISTORY_SIDE_CHAT_DIRS")
+    if explicit is not None:
+        return [Path(p).expanduser() for p in explicit.split(os.pathsep) if p]
+    return [Path.home() / ".claude/side-chats"]
+
+
 def opencode_db_paths() -> list[Path]:
     """OpenCode stores everything in one SQLite file under its data dir."""
     explicit = _env("AGENT_HISTORY_OPENCODE_DB")

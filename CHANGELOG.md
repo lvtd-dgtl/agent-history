@@ -12,6 +12,15 @@ they have no corresponding tags.
 ## [Unreleased]
 
 ### Added
+- **Desktop side chats are searchable**: `hooks/side_chat_capture.py` (installed
+  as a managed-settings hook, see `deploy/side-chats/README.md`) records
+  `--no-session-persistence` side chats to `~/.claude/side-chats/`, and the new
+  `claude-code-side` adapter indexes them, linked to the parent Claude Code
+  session as a fork. New `AGENT_HISTORY_SIDE_CHAT_DIRS`. See
+  `docs/design/side-chat-capture.md`. Capture is narrow: only when the nearest
+  claude is a fork-session/no-persistence launch and `CLAUDE_CODE_ENTRYPOINT`
+  is allowed (default `claude-desktop`); opt out with
+  `AGENT_HISTORY_SIDE_CHATS=off` or `~/.claude/side-chats/.disabled`.
 - **Parent link for fresh-context sessions (Claude Code)**: a session whose
   first user message begins with the line `Parent session id: <uuid>` (what
   Claude desktop's `start_session` briefs should carry) is linked to that

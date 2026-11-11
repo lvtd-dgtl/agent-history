@@ -15,6 +15,7 @@ _LEAKY = [
     "AGENT_HISTORY_HOME",
     "AGENT_HISTORY_PROJECTS",
     "AGENT_HISTORY_CODEX",
+    "AGENT_HISTORY_SIDE_CHAT_DIRS",
     "AGENT_HISTORY_OPENCODE_DB",
     "AGENT_HISTORY_HERMES_DIRS",
     "AGENT_HISTORY_OPENCLAW_DIRS",
@@ -62,6 +63,7 @@ def isolated_env(tmp_path, monkeypatch):
     # Pin every adapter inside tmp_path so a developer's real transcripts
     # never leak into a test run.
     monkeypatch.setenv("AGENT_HISTORY_CODEX", str(tmp_path / "codex"))
+    monkeypatch.setenv("AGENT_HISTORY_SIDE_CHAT_DIRS", str(tmp_path / "side-chats"))
     monkeypatch.setenv("AGENT_HISTORY_OPENCODE_DB",
                        str(tmp_path / "opencode/opencode.db"))
     monkeypatch.setenv("AGENT_HISTORY_HERMES_DIRS", str(tmp_path / "hermes"))
