@@ -282,9 +282,12 @@ def test_subagent_and_fork_fields_ride_the_wire_and_survive_the_inbox(
         msg("user", "copied line from the parent session", session="child-1",
             forkedFrom=fork),
         msg("user", "a new turn in the forked session", session="child-1")])
+    transcripts("proj", "parent-1", [msg(
+        "user", "copied line from the parent session", session="parent-1")])
     assert ship.run() == 0
     by_text = {r["text"]: r for r in shipped(hub)}
-    assert len(by_text) == 2  # the copied fork line was not shipped
+    # the fork's copy is not shipped; the parent's own line is (once)
+    assert len(by_text) == 3
     sub = by_text["subagent output that should be labelled"]
     assert (sub["agent_id"], sub["agent_type"], sub["sidechain"]) == (
         "a74d", "job-researcher", True)
@@ -295,6 +298,20 @@ def test_subagent_and_fork_fields_ride_the_wire_and_survive_the_inbox(
     assert (parsed.agent_id, parsed.agent_type, parsed.sidechain) == (
         "a74d", "job-researcher", True)
     assert inbox._parse(json.dumps(new), "laptop").fork_of == "parent-1"
+
+
+def test_hub_inbox_drops_hostile_labels_and_fork_ids():
+    from agent_history.adapters import inbox
+    base = {"v": 1, "agent": "claude-code", "origin": "/o", "session_id": "s",
+            "text": "a line with odd labels"}
+    for bad in ("\x1b[31mred", "a\nb", "x" * 300, {"a": 1}, ["a"], 5, "a b!"):
+        rec = inbox._parse(json.dumps({**base, "agent_id": bad,
+                                       "agent_type": bad, "fork_of": bad}), "m")
+        assert (rec.agent_id, rec.agent_type, rec.fork_of) == (None, None, None), bad
+    ok = inbox._parse(json.dumps({**base, "agent_id": "a74d", "agent_type": "job-researcher",
+                                  "fork_of": "parent-1"}), "m")
+    assert (ok.agent_id, ok.agent_type, ok.fork_of) == (
+        "a74d", "job-researcher", "parent-1")
 
 
 def test_a_v1_line_without_the_new_fields_still_parses():
@@ -334,8 +351,8 @@ def test_backfill_carries_fork_of_from_the_index(transcripts, fake_embed, hub):
 @needs_vec
 def test_backfill_of_a_fork_whose_parent_was_never_indexed(
         transcripts, fake_embed, hub):
-    # The parent's row is absent, so its source id is unknown to the index.
-    # Chosen behaviour: ship the chunk without fork_of rather than guess.
+    # The parent's transcript is gone, so the fork's copied lines are the
+    # only record of that history: they must be indexed and shipped.
     fork = {"sessionId": "ghost-parent", "messageUuid": "u"}
     p = transcripts("proj", "orphan-1", [
         msg("user", "copied from a parent we never saw", session="orphan-1",
@@ -344,9 +361,10 @@ def test_backfill_of_a_fork_whose_parent_was_never_indexed(
     index.run()
     p.unlink()
     assert ship.run(backfill=True) == 0
-    (rec,) = shipped(hub)
-    assert rec["text"] == "a new turn in an orphaned fork"
-    assert "fork_of" not in rec
+    by_text = {r["text"]: r for r in shipped(hub)}
+    assert set(by_text) == {"copied from a parent we never saw",
+                            "a new turn in an orphaned fork"}
+    assert all("fork_of" not in r for r in by_text.values())
 
 
 def test_wire_labels_are_capped_redacted_and_never_self_forks(transcripts, hub):

@@ -25,7 +25,7 @@ from typing import Iterator
 
 from .. import config
 from ..textproc import MIN_CHARS, scrub
-from . import Record
+from . import (Record, clean_agent_id, clean_agent_type, clean_session_ref)
 
 AGENT = "claude-code"
 
@@ -59,7 +59,11 @@ class ClaudeCodeAdapter:
 
     def records(self) -> Iterator[Record]:
         self._bridges = self._session_bridges()
-        for path in self._transcript_files():
+        files = self._transcript_files()
+        # Sessions whose transcript this scan covers: only their copies can
+        # be dropped from a fork, since only then is the text kept elsewhere.
+        self._known_sessions = {p.stem for p in files}
+        for path in files:
             yield from self._read_transcript(path)
         for path in self._memory_files():
             yield from self._read_memory(path)
@@ -108,16 +112,17 @@ class ClaudeCodeAdapter:
         # can come after messages that belong to the same session.
         out: list[Record] = []
         bridges = dict(getattr(self, "_bridges", {}))
+        known = getattr(self, "_known_sessions", set())
         try:
             handle = path.open(encoding="utf-8", errors="replace")
         except OSError:
             return
         # <proj>/<session>/subagents/agent-<id>.jsonl
         in_subagents = path.parent.name == "subagents"
-        file_agent_id = (path.stem[len("agent-"):]
-                         if in_subagents and path.stem.startswith("agent-")
-                         else None)
-        fork_parents: list[str] = []
+        file_agent_id = clean_agent_id(
+            path.stem[len("agent-"):]
+            if in_subagents and path.stem.startswith("agent-") else None)
+        fork_parent: str | None = None
         brief_parent: str | None = None
         first_user_seen = False
         with handle as lines:
@@ -137,17 +142,18 @@ class ClaudeCodeAdapter:
                 if role not in ("user", "assistant"):
                     continue
                 forked = entry.get("forkedFrom")
-                if (isinstance(forked, dict) and forked.get("sessionId")
-                        and forked.get("sessionId") == entry.get("sessionId")):
-                    forked = None  # a self-reference is not a fork
-                if forked:
-                    # Copied from the parent at the fork point: those lines
-                    # belong to the parent session, not to this new one.
-                    parent = (forked.get("sessionId")
-                              if isinstance(forked, dict) else None)
-                    if parent and parent not in fork_parents:
-                        fork_parents.append(parent)
-                    continue
+                parent = (clean_session_ref(forked.get("sessionId"))
+                          if isinstance(forked, dict) else None)
+                if parent and parent == entry.get("sessionId"):
+                    parent = None  # a self-reference is not a fork
+                if parent:
+                    # The last copied line is the fork point, so a fork of a
+                    # fork names its direct parent.
+                    fork_parent = parent
+                    if parent in known:
+                        # Copied from a parent indexed from its own file:
+                        # those lines belong to the parent, not to this one.
+                        continue
                 sidechain = bool(entry.get("isSidechain")) or in_subagents
                 if role == "user" and not sidechain and not first_user_seen:
                     # Only the first user turn of the main thread may name a
@@ -155,9 +161,13 @@ class ClaudeCodeAdapter:
                     first_user_seen = True
                     first = next(_texts(entry.get("message") or {}), "")
                     brief_parent = _brief_parent(first)
-                agent_id = (entry.get("agentId") or file_agent_id
+                raw_id = entry.get("agentId")
+                # The file name stands in only when the line has no id; a
+                # present but malformed id is dropped, not replaced.
+                agent_id = ((file_agent_id if raw_id in (None, "")
+                             else clean_agent_id(raw_id))
                             if sidechain else None)
-                agent_type = (entry.get("attributionAgent") or None
+                agent_type = (clean_agent_type(entry.get("attributionAgent"))
                               if sidechain else None)
                 for text in _texts(entry.get("message") or {}):
                     text = text.strip()
@@ -177,7 +187,7 @@ class ClaudeCodeAdapter:
                         agent_type=agent_type,
                         sidechain=sidechain,
                     ))
-        fork_of = fork_parents[0] if fork_parents else None
+        fork_of = fork_parent
         if not fork_of and brief_parent and out:
             # A real fork wins; a self-reference is not a link.
             if brief_parent != (out[0].session_id or path.stem):
