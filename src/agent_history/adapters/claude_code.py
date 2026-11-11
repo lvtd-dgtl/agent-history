@@ -19,6 +19,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -117,6 +118,8 @@ class ClaudeCodeAdapter:
                          if in_subagents and path.stem.startswith("agent-")
                          else None)
         fork_parents: list[str] = []
+        brief_parent: str | None = None
+        first_user_seen = False
         with handle as lines:
             for line in lines:
                 try:
@@ -146,6 +149,12 @@ class ClaudeCodeAdapter:
                         fork_parents.append(parent)
                     continue
                 sidechain = bool(entry.get("isSidechain")) or in_subagents
+                if role == "user" and not sidechain and not first_user_seen:
+                    # Only the first user turn of the main thread may name a
+                    # parent (see _brief_parent); a later one never does.
+                    first_user_seen = True
+                    first = next(_texts(entry.get("message") or {}), "")
+                    brief_parent = _brief_parent(first)
                 agent_id = (entry.get("agentId") or file_agent_id
                             if sidechain else None)
                 agent_type = (entry.get("attributionAgent") or None
@@ -169,6 +178,10 @@ class ClaudeCodeAdapter:
                         sidechain=sidechain,
                     ))
         fork_of = fork_parents[0] if fork_parents else None
+        if not fork_of and brief_parent and out:
+            # A real fork wins; a self-reference is not a link.
+            if brief_parent != (out[0].session_id or path.stem):
+                fork_of = brief_parent
         for record in out:
             if fork_of:
                 record = dataclasses.replace(record, fork_of=fork_of)
@@ -206,6 +219,24 @@ def _bridge_kind(bridge_id: object) -> str | None:
         if bridge_id.startswith("session_") and len(bridge_id) > 8:
             return "bridge"
     return None
+
+
+# A fresh-context session (Claude desktop's start_session) has no forkedFrom;
+# its brief may name the parent on the first line of the first user message.
+_PARENT_LINE = re.compile(
+    r"Parent session id: ([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-"
+    r"[0-9a-f]{12})")
+
+
+def _brief_parent(text: str) -> str | None:
+    """The parent id on the first line of ``text``, else None.
+
+    Case-sensitive, nothing else on the line; a BOM and trailing whitespace
+    or CRLF are tolerated. Only the strict UUID shape is ever returned.
+    """
+    first = text.removeprefix("\ufeff").split("\n", 1)[0].rstrip()
+    match = _PARENT_LINE.fullmatch(first)
+    return match.group(1) if match else None
 
 
 def _texts(message: dict) -> Iterator[str]:
