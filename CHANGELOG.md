@@ -12,6 +12,14 @@ they have no corresponding tags.
 ## [Unreleased]
 
 ### Added
+- **Parent link for fresh-context sessions (Claude Code)**: a session whose
+  first user message begins with the line `Parent session id: <uuid>` (what
+  Claude desktop's `start_session` briefs should carry) is linked to that
+  parent exactly like a fork (`fork_of` / `forks`, late-linked if the parent
+  arrives later). Only the first line of the first main-thread user message
+  counts, the id must be a lowercase UUID, self-references and subagent files
+  are ignored, and a real `forkedFrom` or an existing link to another parent
+  is never overwritten. No new wire keys. See README, "Session identity".
 - **Subagent labels and fork handling (Claude Code)**: subagent transcripts
   (`<session>/subagents/agent-<id>.jsonl`) still index under the parent
   session, but their chunks now carry `agent_id`, `agent_type` and `sidechain`

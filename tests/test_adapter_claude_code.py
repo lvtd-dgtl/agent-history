@@ -161,3 +161,97 @@ def test_forked_lines_are_skipped_and_the_rest_carry_fork_of(transcripts):
     (rec,) = records()
     assert rec.text == "a genuinely new turn after the fork"
     assert rec.session_id == "child-1" and rec.fork_of == "parent-1"
+
+
+# ------------------------------------------ brief convention: parent session id
+
+PARENT = "0b1c2d3e-4f50-4a6b-8c7d-9e0f1a2b3c4d"
+LINE = f"Parent session id: {PARENT}"
+
+
+def brief_of(transcripts, messages, name="s", project="proj"):
+    transcripts(project, name, messages)
+    return {r.text: r.fork_of for r in records()}
+
+
+def test_brief_line_on_the_first_user_message_links_the_parent(transcripts):
+    got = brief_of(transcripts, [
+        msg("user", f"{LINE}\nNow research the billing bug in detail."),
+        msg("assistant", "on it, reading the billing code now"),
+    ], name="child")
+    assert set(got.values()) == {PARENT}
+    # the line stays in the text as before
+    assert any(t.startswith(LINE) for t in got)
+
+
+def test_brief_tolerates_crlf_trailing_space_and_bom(transcripts):
+    for i, text in enumerate([f"{LINE}\r\nthe rest of the brief",
+                              f"{LINE}  \t\nthe rest of the brief",
+                              f"﻿{LINE}\r\nthe rest of the brief",
+                              f"{LINE}\n\nbody text"]):
+        got = brief_of(transcripts, [msg("user", text, session=f"c{i}")],
+                       name=f"c{i}")
+        assert PARENT in got.values(), text
+
+
+def test_brief_that_must_not_link(transcripts):
+    cases = {
+        "mid": f"Intro line first\n{LINE}\nmore",
+        "later-message": None,
+        "case": f"parent session id: {PARENT}\nbody text here",
+        "two-spaces": f"Parent session id:  {PARENT}\nbody text here",
+        "trailing-text": f"{LINE} and more\nbody text here",
+        "leading-space": f" {LINE}\nbody text here",
+        "upper": f"Parent session id: {PARENT.upper()}\nbody text here",
+        "short": "Parent session id: parent-1\nbody text here",
+        "long": f"Parent session id: {PARENT}0\nbody text here",
+        "free-text": "Parent session id: sk-secret-token-value-1234567890abcdef\nbody",
+        "quoted": f"> {LINE}\nbody text here",
+    }
+    for name, text in cases.items():
+        if text is None:
+            msgs = [msg("user", "an ordinary opening message", session=name),
+                    msg("user", f"{LINE}\nsecond message", session=name)]
+        else:
+            msgs = [msg("user", text, session=name)]
+        got = brief_of(transcripts, msgs, name=name)
+        assert set(got.values()) == {None}, name
+
+
+def test_quote_in_assistant_text_or_tool_output_does_not_link(transcripts):
+    got = brief_of(transcripts, [
+        msg("user", "an ordinary opening message"),
+        msg("assistant", f"{LINE}\nquoting the convention back"),
+        {"type": "user", "sessionId": "sess-1", "cwd": "/work",
+         "timestamp": "2026-01-01T00:00:00Z",
+         "message": {"content": [{"type": "tool_result",
+                                  "content": f"{LINE}\ntool output"}]}},
+    ])
+    assert set(got.values()) == {None}
+
+
+def test_brief_on_a_sidechain_or_subagent_file_does_not_link(transcripts):
+    got = brief_of(transcripts, [
+        msg("user", f"{LINE}\nsidechain prompt", isSidechain=True)])
+    assert set(got.values()) == {None}
+    transcripts("proj/par/subagents", "agent-a1", [
+        msg("user", f"{LINE}\nsubagent prompt text", session="par")])
+    assert {r.fork_of for r in records() if r.text.startswith(LINE)
+            and "subagent" in r.text} == {None}
+
+
+def test_brief_naming_the_sessions_own_id_is_ignored(transcripts):
+    own = "11111111-2222-4333-8444-555555555555"
+    got = brief_of(transcripts, [msg("user", f"Parent session id: {own}\nbody text",
+                                     session=own)], name=own)
+    assert set(got.values()) == {None}
+
+
+def test_real_fork_wins_over_the_brief_line(transcripts):
+    fork = {"sessionId": "real-parent", "messageUuid": "u"}
+    got = brief_of(transcripts, [
+        msg("user", "copied from the real parent at the fork point",
+            session="c", forkedFrom=fork),
+        msg("user", f"{LINE}\nfirst new turn, after the fork", session="c"),
+    ], name="c")
+    assert set(got.values()) == {"real-parent"}
