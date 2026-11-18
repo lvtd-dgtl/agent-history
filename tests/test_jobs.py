@@ -53,7 +53,7 @@ def test_every_record_carries_the_job_in_path_and_header(env):
         assert JOB in line["cwd"]
         assert line["job"] == {"job_id": JOB, "duet_channel_id": "chan_7Hq2",
                                "studio_task_key": "ATR-31", "kind": "job",
-                               "repo": "lvtd-dgtl/storm-check", "branch": f"job/{JOB}"}
+                               "repo": "example-org/example-repo", "branch": f"job/{JOB}"}
 
 
 def test_every_record_carries_the_claude_session_uuid(env):
@@ -87,7 +87,7 @@ def test_the_header_record_makes_the_job_findable_by_text(env):
     text = header["text"]
     assert text.startswith(f"[claude-jobs job] {JOB}")
     for expected in ("Duet channel: chan_7Hq2", "Studio task: ATR-31",
-                     "Repo: lvtd-dgtl/storm-check", f"Claude session: {SID}",
+                     "Repo: example-org/example-repo", f"Claude session: {SID}",
                      "Status: running", "Fix the login redirect loop on staging"):
         assert expected in text
     assert header["timestamp"] == "2026-11-01T12:00:00.000Z"

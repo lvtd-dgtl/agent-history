@@ -36,7 +36,7 @@ class FakeBoat:
         self.states[vm] = state
         home = self.homes / vm
         if rows is not None:
-            d = home / ".claude" / "projects" / "-home-user-storm-check"
+            d = home / ".claude" / "projects" / "-home-user-example-repo"
             d.mkdir(parents=True)
             (d / f"{VSID}.jsonl").write_text(
                 "".join(json.dumps(r) + "\n" for r in rows))
@@ -82,9 +82,9 @@ class FakeBoat:
 
 ROWS = [
     session_line("user", "Audit the signup form for accessibility issues.",
-                 "2026-11-01T23:00:01.000Z", sid=VSID, cwd="/home/user/storm-check"),
+                 "2026-11-01T23:00:01.000Z", sid=VSID, cwd="/home/user/example-repo"),
     session_line("assistant", f"Found 3 issues; also saw {GH} in .env, rotate it.",
-                 "2026-11-01T23:01:30.000Z", sid=VSID, cwd="/home/user/storm-check"),
+                 "2026-11-01T23:01:30.000Z", sid=VSID, cwd="/home/user/example-repo"),
 ]
 
 
@@ -146,12 +146,12 @@ def test_vm_records_are_their_own_conversation_tagged_with_the_job(env):
     for line in lines:
         assert line["job"] == {"job_id": JOB, "duet_channel_id": "chan_7Hq2",
                                "studio_task_key": "ATR-31", "kind": "vm", "vm_id": VM,
-                               "repo": "lvtd-dgtl/storm-check", "branch": f"job/{JOB}"}
+                               "repo": "example-org/example-repo", "branch": f"job/{JOB}"}
         assert JOB in line["cwd"] and VM in line["origin"] or line["role"] == "job"
     (header,) = [l for l in lines if l["role"] == "job"]
     assert header["text"].startswith(f"[claude-jobs vm] {JOB} vm {VM}")
     assert f"Claude session: {VSID}" in header["text"]
-    assert "VM cwd: /home/user/storm-check" in header["text"]
+    assert "VM cwd: /home/user/example-repo" in header["text"]
     blob = json.dumps(shipped_lines(env["landing"]))
     assert GH not in blob and "[REDACTED:github_token]" in blob
     (seal,) = [l for l in shipped_lines(env["landing"])
@@ -260,7 +260,7 @@ def test_a_reexport_replaces_the_copy_and_ships_only_new_records(env):
     with f.open("a") as fh:
         fh.write(json.dumps(session_line("assistant", "A follow-up after the VM resumed.",
                                          "2026-11-01T23:30:00.000Z", sid=VSID,
-                                         cwd="/home/user/storm-check")) + "\n")
+                                         cwd="/home/user/example-repo")) + "\n")
     assert boat_export.run(JOB, [VM], boat=boat) == WAIT
     lines = vm_lines(env)
     assert len(lines) == first + 2   # the new message, and a VM header for the new copy

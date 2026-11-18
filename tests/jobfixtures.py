@@ -44,7 +44,7 @@ def make_job(root: Path, projects: Path, *, job_id: str = JOB, meta: dict | None
     path.mkdir(parents=True, exist_ok=True)
     data = {"job_id": job_id, "ask": "Fix the login redirect loop on staging",
             "duet_channel_id": "chan_7Hq2", "studio_task_key": "ATR-31",
-            "repo": "lvtd-dgtl/storm-check", "branch": f"job/{job_id}",
+            "repo": "example-org/example-repo", "branch": f"job/{job_id}",
             "status": "running",
             "timestamps": {"created_at": "2026-11-01T12:00:00Z"}}
     data.update(meta or {})

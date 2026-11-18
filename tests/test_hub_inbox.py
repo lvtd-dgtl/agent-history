@@ -207,19 +207,19 @@ def test_ingest_stays_inside_its_tenant(tmp_path, fake_embed, monkeypatch):
     monkeypatch.setenv("AGENT_HISTORY_TENANTS", str(tenants))
     monkeypatch.setenv("AGENT_HISTORY_HUB", "1")
     inboxes = tmp_path / "hubinbox"
-    drop(inboxes / "dennis", "pc", "b1.jsonl", line("dennis private plan, long enough"))
-    drop(inboxes / "soaring-eagle", "lexi", "b1.jsonl",
-         line("client plan for soaring eagle, long enough"))
+    drop(inboxes / "kim", "pc", "b1.jsonl", line("kim private plan, long enough"))
+    drop(inboxes / "globex", "bot1", "b1.jsonl",
+         line("client plan for globex, long enough"))
 
-    for tenant in ("dennis", "soaring-eagle"):
+    for tenant in ("kim", "globex"):
         monkeypatch.setenv("AGENT_HISTORY_INBOX", str(inboxes / tenant))
         with config.tenant_home(tenant):
             assert index.run() == 0
 
     seen = {}
-    for tenant in ("dennis", "soaring-eagle"):
+    for tenant in ("kim", "globex"):
         with config.tenant_home(tenant):
             db = store.open_for_read()
             seen[tenant] = [r[0] for r in db.execute("SELECT text FROM chunks")]
-    assert seen == {"dennis": ["dennis private plan, long enough"],
-                    "soaring-eagle": ["client plan for soaring eagle, long enough"]}
+    assert seen == {"kim": ["kim private plan, long enough"],
+                    "globex": ["client plan for globex, long enough"]}

@@ -6,7 +6,7 @@ confirmed final ship.
 
 ## Goal
 
-A fleet job (a `claude -p` job on fleet-1, run as `claude-jobs`) drives its
+A fleet job (a `claude -p` job on the fleet host, run as `claude-jobs`) drives its
 own Boat VMs, each running Claude Code. The runbook's rule: VMs are stopped
 (paused), never deleted, until the work is verified, and their transcripts
 go into agent history before teardown. This piece makes that one command
@@ -38,7 +38,7 @@ Everything is pulled from the outside with the Boat CLI.
 ## Data flow
 
 ```
-fleet job (claude-jobs on fleet-1)
+fleet job (claude-jobs on the fleet host)
   └─ agent-history boat-export --job J bx_1 bx_2
        for each VM:
          boat info  → stopped? → boat resume (the disk survives a stop)
@@ -60,7 +60,7 @@ runs the shipper once."
 
 `boat-export` runs as claude-jobs, which stays upload-only: it cannot read
 the hub, so it cannot check indexing itself. The check runs on the runner's
-side (`agent-history confirm-indexed --job <job_id>`, as Clamps, piece A),
+side (`agent-history confirm-indexed --job <job_id>`, as OpsBot, piece A),
 and its result comes back as a file in the job directory:
 
 ```
@@ -83,7 +83,7 @@ Flow on the fleet:
 
 ```
 fleet job (claude-jobs)      boat-export --job J bx_1      → 4: arrived, stopped
-runner (Clamps, 1/min)       confirm-indexed --job J        → 0 once indexed
+runner (OpsBot, 1/min)       confirm-indexed --job J        → 0 once indexed
 runner → job dir             write the JSON to <jobs>/J/index-confirmed.json
                              (the runner's `claude-job set-indexed`, which runs as claude-jobs)
 fleet job or cleanup         boat-export --job J --check bx_1 && boat delete bx_1
@@ -95,7 +95,7 @@ transcripts; it gives no read access to anything.
 
 ## File, path and header layout
 
-On fleet-1, inside the job directory:
+On the fleet host, inside the job directory:
 
 ```
 <jobs>/<job_id>/vms/<vm_id>/projects/<slug>/<session>.jsonl   the pulled copy
@@ -142,7 +142,7 @@ export can gate `boat delete` on it.
 Unchanged from piece A: the job shipper redacts every record's text, and the
 values of the `job` object, before a batch is written. The pulled copy in the
 job directory is raw (it sits next to the job's own raw `transcript.jsonl`,
-in the claude-jobs user's 0700 tree), and nothing raw leaves fleet-1. VMs
+in the claude-jobs user's 0700 tree), and nothing raw leaves the fleet host. VMs
 are started `--no-env` (runbook), so their transcripts should not hold
 account secrets in the first place.
 

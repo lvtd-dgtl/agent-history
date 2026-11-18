@@ -4,7 +4,7 @@ Status: draft, for review with the PR that implements it.
 
 ## Goal
 
-Every `claude -p` job that Clamps starts as the `claude-jobs` user ships its
+Every `claude -p` job that OpsBot starts as the `claude-jobs` user ships its
 full transcript to the agent-history hub, so any agent up the chain can read
 the job back without the job summarising itself:
 
@@ -18,19 +18,19 @@ records. Looking a job up by its **Claude session uuid** with `history_show`
 needs one small hub change (a new alias kind, below), so it works after the
 hub is upgraded.
 
-Two gates, both from Dennis (Nov 1):
+Two gates, both from the owner (Nov 1):
 
 1. **Arrival** (`ship-final`, run by the runner as claude-jobs): exit 0 once
    every batch of the job has reached the hub.
-2. **Indexing** (`confirm-indexed`, run on Clamps' side, never as
+2. **Indexing** (`confirm-indexed`, run on OpsBot's side, never as
    claude-jobs): exit 0 once the hub has indexed the job, i.e. the header and
    every session are findable by job id.
 
-## Shape: the Clamps pattern, plus a job wrapper
+## Shape: the OpsBot pattern, plus a job wrapper
 
-Clamps ships with `agent-history ship` from its own user, through an
-upload-only key (`command="rrsync -wo /home/ahub/inbox/dennis/clamps"`). The
-hub indexes whatever lands in `inbox/dennis/<machine>/`. This piece keeps all
+OpsBot ships with `agent-history ship` from its own user, through an
+upload-only key (`command="rrsync -wo /home/ahub/inbox/kim/opsbot"`). The
+hub indexes whatever lands in `inbox/kim/<machine>/`. This piece keeps all
 of that and adds one command, `agent-history ship-jobs`, which knows the job
 layout:
 
@@ -53,11 +53,11 @@ claude -p ──writes──> transcript.jsonl + ~/.claude/projects/...
    every 2 min  │  agent-history ship-jobs            (systemd user timer, claude-jobs)
    job end      │  /usr/local/lib/claude-jobs/ship-final <job_id>   (the runner, before "done")
                 ▼
-   redact ──> outbox/<job_id>-<stamp>-<seq>.jsonl ──rsync, upload-only key──> ahub:inbox/dennis/claude-jobs/
+   redact ──> outbox/<job_id>-<stamp>-<seq>.jsonl ──rsync, upload-only key──> ahub:inbox/kim/claude-jobs/
                                                                                  │
-                                         agent-history-hub-index@dennis (.path + 1-min timer)
+                                         agent-history-hub-index@kim (.path + 1-min timer)
                                                                                  ▼
-                                                   tenants/dennis/index.db (FTS + vectors, embedded by Ollama)
+                                                   tenants/kim/index.db (FTS + vectors, embedded by Ollama)
                                                                                  ▼
                                                agent-history mcp ─> Router ─> history_recall / history_show
 ```
@@ -70,7 +70,7 @@ shipped.
 
 ## Path and header layout
 
-**Path.** The upload key pins the hub directory `inbox/dennis/claude-jobs/`.
+**Path.** The upload key pins the hub directory `inbox/kim/claude-jobs/`.
 Each job is flushed into its own batch files, named
 `<job_id>-<UTCstamp>-<pid>-<rand>-<seq>.jsonl`. The hub keeps that name when
 it retires the batch to `.processed/claude-jobs/`, so the job id is in the
@@ -122,7 +122,7 @@ file names, and `job.json`'s `session_id` / `claude_session_ids`.
 - `history_show(session="<uuid>")` resolves on a hub that knows the alias
   kind `claude` (this PR adds it to `sessions.ALIAS_KINDS`). An older hub
   drops the alias it doesn't know, so this one lookup needs the **hub
-  upgrade** (Dennis's steps). `claude` is a pointer, not proof that two
+  upgrade** (the owner's steps). `claude` is a pointer, not proof that two
   sessions are one: it never merges sessions, and the first session to claim
   a uuid keeps it.
 - `history_show` and `history_recall` results include `claude_session_ids`
@@ -186,34 +186,34 @@ agent-history confirm-indexed --job <job_id> [--json] [--receipt FILE]
   2  config or credential error (no hub configured, key refused, tenant refused)
 ```
 
-It runs where the runner's index confirmer runs: inside clamps-bridge, as
-Clamps (`ops_a0dc6f0c`), once a minute for up to 15 minutes after
+It runs where the runner's index confirmer runs: inside opsbot-bridge, as
+OpsBot (`ops_1a2b3c4d`), once a minute for up to 15 minutes after
 `ship-final`. **Never as claude-jobs**: jobs run arbitrary code in auto mode,
-and a read credential there would expose all of Dennis's history to every
+and a read credential there would expose all of the owner's history to every
 job. claude-jobs keeps only its upload-only key.
 
-**Read path: Clamps' existing read-only ssh key.** Clamps already reads the
+**Read path: OpsBot's existing read-only ssh key.** OpsBot already reads the
 hub through `AGENT_HISTORY_REMOTE` and a key pinned in `authorized_keys` to
-`command="… agent-history serve-ssh --tenants dennis",restrict`. `serve-ssh`
+`command="… agent-history serve-ssh --tenants kim",restrict`. `serve-ssh`
 answers only `search` and `show`, runs them in-process (never a shell), and
 the tenant list is fixed by the forced command, so the client cannot widen
 it. Why this one:
 
-- It exists and is in daily use (Clamps' `ah-search`), so there is no new
+- It exists and is in daily use (OpsBot's `ah-search`), so there is no new
   secret, key, token or listener, and nothing new on claude-jobs.
 - It runs the same functions the MCP tools run (`search.search_rows` for
   `history_recall`, `show.rows_for` for `history_show`), so "findable with
   history_recall / history_show" is tested literally, against the tenant's
   own index.
-- The alternative, a bearer token for the hub's MCP server in Clamps' env,
+- The alternative, a bearer token for the hub's MCP server in OpsBot's env,
   would be a second read credential with the same reach, and a new secret to
   rotate. A forced command that only answers index status would be narrower,
-  but Clamps already holds full read access through this key, so a narrower
+  but OpsBot already holds full read access through this key, so a narrower
   key would protect nothing.
 
 With `--local` it reads this machine's index instead (on the hub itself as
 `ahub`, and in tests). Without `--local` and without `AGENT_HISTORY_REMOTE`
-it exits 2: Clamps has a local index of its own, and silently reading that
+it exits 2: OpsBot has a local index of its own, and silently reading that
 would report "not yet" until the 15 minutes run out.
 
 **What it checks**, all by job id:
@@ -253,7 +253,7 @@ scanner floods before.
 | timer and `ship-final` overlap | `ship-final` waits for the lock | none needed |
 | old job dirs pile up | each run re-reads them; already-shipped hashes are skipped | prune job dirs after the hub has them |
 | arrived but not indexed (Ollama down, indexer stuck) | `confirm-indexed` exits 1 | the runner retries for 15 min, then alerts on Telegram |
-| Clamps' read key refused or no hub configured | `confirm-indexed` exits 2 | the runner alerts at once |
+| OpsBot's read key refused or no hub configured | `confirm-indexed` exits 2 | the runner alerts at once |
 
 ## How a parent agent reads a job back
 
@@ -277,19 +277,19 @@ history_show(session="5f2b8c1e-…")                   → the same job (after t
 `sort="newest"` to find the latest job: it only re-sorts the top relevance
 hits.
 
-## Deployment (Dennis's steps; nothing here touches the live hub)
+## Deployment (the owner's steps; nothing here touches the live hub)
 
-1. Hub: `mkdir -m 700 /home/ahub/inbox/dennis/claude-jobs` (as ahub), add the
+1. Hub: `mkdir -m 700 /home/ahub/inbox/kim/claude-jobs` (as ahub), add the
    upload-only key line to `~ahub/.ssh/authorized_keys`, and add
-   `PathChanged=/home/ahub/inbox/dennis/claude-jobs` to the
-   `agent-history-hub-index@dennis.path` drop-in.
+   `PathChanged=/home/ahub/inbox/kim/claude-jobs` to the
+   `agent-history-hub-index@kim.path` drop-in.
 2. claude-jobs: install agent-history (`uv tool install`) from this branch
    (once merged, from the release), create the ingest key, write
    `~/.config/agent-history/env`, install and enable the two user units in
    `deploy/claude-jobs/`.
 3. Root: install `deploy/claude-jobs/ship-final` as
    `/usr/local/lib/claude-jobs/ship-final` (root-owned, 0755).
-4. Clamps (`ops_a0dc6f0c`): upgrade its agent-history to a version with
+4. OpsBot (`ops_1a2b3c4d`): upgrade its agent-history to a version with
    `confirm-indexed`; the hub settings it already uses for `ah-search`
    (`AGENT_HISTORY_REMOTE`, `AGENT_HISTORY_REMOTE_KEY`) are all it needs.
 5. Hub (for uuid lookup with `history_show` only): upgrade agent-history so

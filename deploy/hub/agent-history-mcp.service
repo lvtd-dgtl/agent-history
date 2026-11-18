@@ -8,18 +8,18 @@
 # Tokens: create them as ahub, BEFORE starting (the server refuses to start
 # with none). Only their SHA-256 is stored, in a 0600 file:
 #   sudo -u ahub env AGENT_HISTORY_MCP_TOKENS=/home/ahub/mcp-tokens.json \
-#     /home/ahub/.local/bin/agent-history mcp token add router-read  --scope read  --tenant dennis
+#     /home/ahub/.local/bin/agent-history mcp token add router-read  --scope read  --tenant kim
 #   sudo -u ahub env AGENT_HISTORY_MCP_TOKENS=/home/ahub/mcp-tokens.json \
-#     /home/ahub/.local/bin/agent-history mcp token add router-write --scope write --tenant dennis --machine claude-ai
+#     /home/ahub/.local/bin/agent-history mcp token add router-write --scope write --tenant kim --machine claude-ai
 # Each prints its token once: put it in the router's env file, nowhere else.
 # Adding or revoking a token takes effect without a restart.
 #
 # Records written by history_record land in /home/ahub/inbox/<tenant>/<machine>/
 # and are indexed by agent-history-hub-index@<tenant> like any shipped batch.
 # Add that directory to the tenant's .path unit so they index immediately:
-#   systemctl edit agent-history-hub-index@dennis.path
+#   systemctl edit agent-history-hub-index@kim.path
 #     [Path]
-#     PathChanged=/home/ahub/inbox/dennis/claude-ai
+#     PathChanged=/home/ahub/inbox/kim/claude-ai
 [Unit]
 Description=agent-history hub: MCP server (loopback, behind the MCP router)
 After=network.target ollama.service

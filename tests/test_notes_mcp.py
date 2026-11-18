@@ -23,7 +23,7 @@ URL = "https://claude.ai/chat/0f6a7c2e-1234-4abc-8def-0123456789ab"
 JOB = "cj_20261101T120000Z_a1b2c3"
 
 
-def index_tenant(hub, tenant="dennis"):  # noqa: F811
+def index_tenant(hub, tenant="kim"):  # noqa: F811
     """What the hub's index unit does for one tenant."""
     mp = pytest.MonkeyPatch()
     try:
@@ -35,7 +35,7 @@ def index_tenant(hub, tenant="dennis"):  # noqa: F811
 
 
 def note_files(hub, machine="claude-ai"):  # noqa: F811
-    return sorted((hub["inbox"] / "dennis" / machine / "notes").glob("*.jsonl"))
+    return sorted((hub["inbox"] / "kim" / machine / "notes").glob("*.jsonl"))
 
 
 def test_history_note_writes_to_the_notes_inbox_redacted(hub):  # noqa: F811
@@ -55,7 +55,7 @@ def test_history_note_writes_to_the_notes_inbox_redacted(hub):  # noqa: F811
     body = path.read_text()
     assert GH not in body and "[REDACTED:github_token]" in body
     # nothing landed where transcripts go
-    assert not list((hub["inbox"] / "dennis" / "claude-ai").glob("*.jsonl"))
+    assert not list((hub["inbox"] / "kim" / "claude-ai").glob("*.jsonl"))
 
 
 def test_history_note_refuses_a_missing_or_mixed_source(hub):  # noqa: F811
@@ -63,7 +63,7 @@ def test_history_note_refuses_a_missing_or_mixed_source(hub):  # noqa: F811
         none = await client.call_tool("history_note", {"title": "t", "summary": "s"})
         both = await client.call_tool("history_note", {
             "title": "t", "summary": "s", "chat_url": URL,
-            "session_id": "abc", "session_machine": "MSI"})
+            "session_id": "abc", "session_machine": "pc1"})
         return none, both
 
     none, both = run_calls(hub["tokens"]["write"], write)
@@ -136,7 +136,7 @@ def test_notes_never_enter_the_transcript_index(hub):  # noqa: F811
 def test_notes_stay_inside_their_tenant(hub):  # noqa: F811
     async def write(client):
         return await client.call_tool("history_note", {
-            "title": "Dennis-only note", "summary": "kept in the dennis tenant",
+            "title": "the owner-only note", "summary": "kept in the kim tenant",
             "chat_url": URL})
 
     run_calls(hub["tokens"]["write"], write)
@@ -144,9 +144,9 @@ def test_notes_stay_inside_their_tenant(hub):  # noqa: F811
 
     async def read(client):
         return data(await client.call_tool("history_recall", {
-            "query": "dennis tenant", "mode": "text", "notes": "only"}))
+            "query": "kim tenant", "mode": "text", "notes": "only"}))
 
-    assert run_calls(hub["tokens"]["eagle"], read)["count"] == 0
+    assert run_calls(hub["tokens"]["globex"], read)["count"] == 0
     assert run_calls(hub["tokens"]["read"], read)["count"] == 1
 
 

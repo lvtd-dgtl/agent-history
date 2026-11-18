@@ -519,11 +519,11 @@ def test_scrub_replaces_the_secret_in_the_note_and_its_index(fake_embed):
 
 
 def test_scrub_writes_an_audit_record_without_the_secret(fake_embed, monkeypatch):
-    monkeypatch.setenv("SUDO_USER", "dennis")
+    monkeypatch.setenv("SUDO_USER", "kim")
     note = leaked_note()
     notes.scrub(note["note_id"], LEAK, "pasted DB password")
     (entry,) = notes.audit_log()
-    assert entry["actor"] == "dennis" and entry["action"] == "scrub"
+    assert entry["actor"] == "kim" and entry["action"] == "scrub"
     assert entry["note_id"] == note["note_id"] and entry["reason"] == "pasted DB password"
     assert entry["replacements"] >= 3
     assert LEAK not in json.dumps(entry)

@@ -10,7 +10,7 @@ skipped.
 Workspace markdown (MEMORY.md, memory/ tree) is indexed too — same rationale
 as Claude Code project memory: hand-written durable notes surface first.
 
-Format verified 2026-08-10 against live files on openclaw-soaring-eagle
+Format verified 2026-08-10 against live files on a running OpenClaw install
 (OpenClaw 2026.4.26, session header `version: 3`).
 """
 from __future__ import annotations

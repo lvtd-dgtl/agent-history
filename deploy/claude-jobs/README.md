@@ -1,6 +1,6 @@
 # claude-jobs shipper: install steps
 
-These are Dennis's steps on lvtd-fleet-1. Nothing in this PR runs them. Each
+These are the operator's steps on the hub host. Nothing in this PR runs them. Each
 one is a cross-user or root change, so run them yourself (`!` passthrough).
 The hub needs no new agent-history version for this: only a directory, a key
 line and a watch line.
@@ -18,17 +18,17 @@ cd /tmp/ah-deploy/deploy/claude-jobs
 
 ```bash
 # a. The machine directory the key will be pinned to
-sudo -u ahub install -d -m 700 /home/ahub/inbox/dennis/claude-jobs
+sudo -u ahub install -d -m 700 /home/ahub/inbox/kim/claude-jobs
 
 # b. claude-jobs' upload-only key (created in step 2a). Append ONE line:
-#    command="rrsync -wo /home/ahub/inbox/dennis/claude-jobs",restrict ssh-ed25519 AAAA... ingest-dennis-claude-jobs
+#    command="rrsync -wo /home/ahub/inbox/kim/claude-jobs",restrict ssh-ed25519 AAAA... ingest-kim-claude-jobs
 sudo -u ahub sh -c 'cat >> /home/ahub/.ssh/authorized_keys' < /tmp/claude-jobs-ingest.line
 
 # c. Index on arrival: add the directory to the tenant's .path drop-in
-sudo systemctl edit agent-history-hub-index@dennis.path
+sudo systemctl edit agent-history-hub-index@kim.path
 #     [Path]
-#     PathChanged=/home/ahub/inbox/dennis/claude-jobs
-sudo systemctl restart agent-history-hub-index@dennis.path
+#     PathChanged=/home/ahub/inbox/kim/claude-jobs
+sudo systemctl restart agent-history-hub-index@kim.path
 ```
 
 The one-minute index timer picks batches up even without step 1c.
@@ -38,8 +38,8 @@ The one-minute index timer picks batches up even without step 1c.
 ```bash
 sudo -iu claude-jobs
 # a. Upload-only key; then build the line for step 1b
-ssh-keygen -t ed25519 -N '' -C ingest-dennis-claude-jobs -f ~/.ssh/agent-history-ingest
-printf 'command="rrsync -wo /home/ahub/inbox/dennis/claude-jobs",restrict %s\n' \
+ssh-keygen -t ed25519 -N '' -C ingest-kim-claude-jobs -f ~/.ssh/agent-history-ingest
+printf 'command="rrsync -wo /home/ahub/inbox/kim/claude-jobs",restrict %s\n' \
   "$(cat ~/.ssh/agent-history-ingest.pub)" > /tmp/claude-jobs-ingest.line
 ssh-keyscan -H localhost >> ~/.ssh/known_hosts
 
@@ -78,17 +78,17 @@ sudo install -d -o root -g root -m 0755 /usr/local/lib/claude-jobs
 sudo install -o root -g root -m 0755 /tmp/ah-deploy/deploy/claude-jobs/ship-final /usr/local/lib/claude-jobs/ship-final
 ```
 
-## 4. Clamps: the index gate (`confirm-indexed`)
+## 4. OpsBot: the index gate (`confirm-indexed`)
 
-The runner's index confirmer (clamps-bridge, as `ops_a0dc6f0c`) runs
+The runner's index confirmer (opsbot-bridge, as `ops_1a2b3c4d`) runs
 `agent-history confirm-indexed --job <id>` once a minute for up to 15 minutes
-after `ship-final`. It uses the read-only hub key Clamps already has for
+after `ship-final`. It uses the read-only hub key OpsBot already has for
 `ah-search`; nothing is added to claude-jobs.
 
 ```bash
-# as ops_a0dc6f0c: upgrade agent-history to a version with confirm-indexed
+# as ops_1a2b3c4d: upgrade agent-history to a version with confirm-indexed
 uv tool install --force "agent-history @ git+https://github.com/d3layd/agent-history@feat/claude-jobs-shipper"
-# clamps-bridge must run it with the same hub settings ah-search loads
+# opsbot-bridge must run it with the same hub settings ah-search loads
 # (AGENT_HISTORY_REMOTE, AGENT_HISTORY_REMOTE_KEY), e.g. in its env file, or set
 #   CLAMPS_BRIDGE_CONFIRM_INDEXED_CMD="<a wrapper that loads them> confirm-indexed"
 agent-history confirm-indexed --job <a finished job id>; echo "exit $?"
@@ -109,7 +109,7 @@ sudo systemctl restart agent-history-mcp
 ## Boat VMs (piece B)
 
 Nothing to install: `boat-export` ships through the same key and env. The
-fleet job's teardown runs, as claude-jobs on fleet-1 (where its Boat
+fleet job's teardown runs, as claude-jobs on the fleet host (where its Boat
 credential lives):
 
 ```bash

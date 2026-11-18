@@ -58,11 +58,11 @@ def test_the_runner_confirms_indexing_then_the_vm_is_safe_to_delete(hub, tmp_pat
     boat.add(VM, "stopped", ROWS)
     assert boat_export.run(JOB, [VM], boat=boat) == boat_export.EXIT_AWAITING_INDEX
     receipt = hub["jobs"] / JOB / "index-confirmed.json"
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert confirm.run(JOB, receipt=str(receipt), local=True) == confirm.EXIT_PENDING
     assert boat_export.check(JOB, [VM]) == boat_export.EXIT_AWAITING_INDEX
     deliver_and_index(hub)
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert confirm.run(JOB, receipt=str(receipt), local=True) == confirm.EXIT_INDEXED
     assert f"{JOB}/vm/{VM}" in json.loads(receipt.read_text())["sessions"]
     assert boat_export.check(JOB, [VM]) == 0

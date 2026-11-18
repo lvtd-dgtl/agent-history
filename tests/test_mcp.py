@@ -46,34 +46,34 @@ def hub(tmp_path, monkeypatch, fake_embed):
     """Two tenants with their own index, an inbox per tenant, and tokens."""
     monkeypatch.setenv("AGENT_HISTORY_TENANTS", str(tmp_path / "tenants"))
     inbox = tmp_path / "inbox"
-    for tenant in ("dennis", "eagle"):
+    for tenant in ("kim", "globex"):
         (inbox / tenant).mkdir(parents=True)
     monkeypatch.setenv("AGENT_HISTORY_INBOX", str(inbox))
     monkeypatch.setenv("AGENT_HISTORY_MCP_TOKENS", str(tmp_path / "tokens.json"))
 
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         db, _ = store.open_for_write()
-        put(db, "dennis vault rotation plan, decided to rotate quarterly",
-            session="sess-dennis")
+        put(db, "kim vault rotation plan, decided to rotate quarterly",
+            session="sess-kim")
         put(db, "a follow-up on the vault rotation plan " + "x" * 3000,
-            session="sess-dennis", role="assistant",
+            session="sess-kim", role="assistant",
             timestamp="2026-01-01T00:01:00Z")
         for n in range(30):
             put(db, f"filler chunk number {n} about deployment pipelines",
                 session=f"sess-fill-{n}")
         db.commit()
         db.close()
-    with config.tenant_home("eagle"):
+    with config.tenant_home("globex"):
         db, _ = store.open_for_write()
-        put(db, "eagle client onboarding plan for lexi", session="sess-eagle")
+        put(db, "globex client onboarding plan for bot1", session="sess-globex")
         db.commit()
         db.close()
 
     tokens = {
-        "read": mcp_auth.add_token("dennis-read", ["read"], "dennis"),
-        "write": mcp_auth.add_token("dennis-write", ["write"], "dennis",
+        "read": mcp_auth.add_token("kim-read", ["read"], "kim"),
+        "write": mcp_auth.add_token("kim-write", ["write"], "kim",
                                     machine="claude-ai"),
-        "eagle": mcp_auth.add_token("eagle-read", ["read"], "eagle"),
+        "globex": mcp_auth.add_token("globex-read", ["read"], "globex"),
     }
     return {"inbox": inbox, "tokens": tokens, "tmp": tmp_path}
 
@@ -139,7 +139,7 @@ def test_tool_listing_follows_the_token_scope(hub):
 
 
 def test_no_tool_can_change_or_delete_history(hub):
-    combined = mcp_auth.add_token("both", ["read", "write"], "dennis")
+    combined = mcp_auth.add_token("both", ["read", "write"], "kim")
 
     async def names(client):
         return {t.name for t in (await client.list_tools()).tools}
@@ -168,7 +168,7 @@ def test_recall_returns_bounded_hits_without_paths(hub):
     hit = out["results"][0]
     assert set(hit) == {"rank", "timestamp", "agent", "machine", "project", "session_id",
                         "session", "role", "score", "distance", "excerpt"}
-    assert hit["session_id"] == "sess-dennis" and hit["machine"] == "pc"
+    assert hit["session_id"] == "sess-kim" and hit["machine"] == "pc"
     assert hit["project"] == "/work/alpha"
     assert all(len(h["excerpt"]) <= mcp_server.EXCERPT_CHARS + 2
                for h in out["results"])
@@ -214,10 +214,10 @@ def test_recall_filters_reach_search(hub):
 
 def test_show_reads_around_a_hit_and_caps_text(hub):
     async def call(client):
-        return await client.call_tool("history_show", {"session": "sess-dennis"})
+        return await client.call_tool("history_show", {"session": "sess-kim"})
 
     out = data(run_calls(hub["tokens"]["read"], call))
-    assert out["session_id"] == "sess-dennis"
+    assert out["session_id"] == "sess-kim"
     assert [m["role"] for m in out["messages"]] == ["user", "assistant"]
     assert all(len(m["text"]) <= mcp_server.SHOW_TEXT_CHARS + 2
                for m in out["messages"])
@@ -225,7 +225,7 @@ def test_show_reads_around_a_hit_and_caps_text(hub):
 
 
 def test_show_limit_is_capped(hub):
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         db = store.open_for_maintenance()
         for n in range(80):
             put(db, f"long session line {n}", session="sess-long",
@@ -250,7 +250,7 @@ def test_show_unknown_session_is_an_error(hub):
 
 def test_show_resolves_aliases_when_the_store_supports_it(hub, monkeypatch):
     monkeypatch.setattr(store, "resolve_session",
-                        lambda db, any_id: "sess-dennis" if any_id == "alias-1" else None,
+                        lambda db, any_id: "sess-kim" if any_id == "alias-1" else None,
                         raising=False)
 
     async def call(client):
@@ -279,12 +279,12 @@ RECORD = {
 
 
 def batches(hub, machine="claude-ai"):
-    return sorted((hub["inbox"] / "dennis" / machine).glob("*.jsonl"))
+    return sorted((hub["inbox"] / "kim" / machine).glob("*.jsonl"))
 
 
 def record_files(hub, machine="claude-ai"):
     """history_record writes a note now (piece D), into the notes inbox."""
-    return sorted((hub["inbox"] / "dennis" / machine / "notes").glob("*.jsonl"))
+    return sorted((hub["inbox"] / "kim" / machine / "notes").glob("*.jsonl"))
 
 
 def test_record_is_redacted_and_lands_in_the_inbox(hub):
@@ -342,9 +342,9 @@ def test_recorded_chats_are_indexed_like_shipped_records(hub, monkeypatch):
     written = data(run_calls(hub["tokens"]["write"], write))
 
     monkeypatch.setenv("AGENT_HISTORY_HUB", "1")
-    monkeypatch.setenv("AGENT_HISTORY_INBOX", str(hub["inbox"] / "dennis"))
+    monkeypatch.setenv("AGENT_HISTORY_INBOX", str(hub["inbox"] / "kim"))
     from agent_history import notes
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert index.run() == 0
         assert notes.index_inbox() == 0      # the hub unit runs both (trigger)
     monkeypatch.setenv("AGENT_HISTORY_INBOX", str(hub["inbox"]))
@@ -383,14 +383,14 @@ def test_record_validates_its_input(hub):
 
 
 def test_record_needs_the_tenant_inbox_to_exist(hub):
-    (hub["inbox"] / "dennis").rename(hub["inbox"] / "elsewhere")
+    (hub["inbox"] / "kim").rename(hub["inbox"] / "elsewhere")
 
     async def call(client):
         return await client.call_tool("history_record", RECORD)
 
     result = run_calls(hub["tokens"]["write"], call)
     assert result.is_error and "inbox" in text_of(result)
-    assert not (hub["inbox"] / "dennis").exists(), "a client must not create it"
+    assert not (hub["inbox"] / "kim").exists(), "a client must not create it"
 
 
 # --------------------------------------------------------------------- auth
@@ -440,7 +440,7 @@ def test_read_token_cannot_record(hub):
 def test_write_token_cannot_read(hub):
     async def call(client):
         return [await client.call_tool("history_recall", {"query": "vault"}),
-                await client.call_tool("history_show", {"session": "sess-dennis"})]
+                await client.call_tool("history_show", {"session": "sess-kim"})]
 
     results = run_calls(hub["tokens"]["write"], call)
     assert all(r.is_error and "may not call" in text_of(r) for r in results)
@@ -449,7 +449,7 @@ def test_write_token_cannot_read(hub):
 
 def test_revoked_token_stops_working_without_a_restart(hub):
     app = app_for()
-    mcp_auth.revoke_token("dennis-read")
+    mcp_auth.revoke_token("kim-read")
     assert post(app, {"Authorization": f"Bearer {hub['tokens']['read']}"}).status_code == 401
 
 
@@ -459,22 +459,22 @@ def test_tenants_are_isolated(hub):
     async def call(client):
         return [await client.call_tool("history_recall",
                                        {"query": "vault rotation", "mode": "text"}),
-                await client.call_tool("history_show", {"session": "sess-dennis"}),
+                await client.call_tool("history_show", {"session": "sess-kim"}),
                 await client.call_tool("history_recall",
                                        {"query": "onboarding plan", "mode": "text"})]
 
-    dennis_hit, dennis_show, own = run_calls(hub["tokens"]["eagle"], call)
+    dennis_hit, dennis_show, own = run_calls(hub["tokens"]["globex"], call)
     assert data(dennis_hit)["count"] == 0
     assert dennis_show.is_error
-    assert data(own)["results"][0]["session_id"] == "sess-eagle"
+    assert data(own)["results"][0]["session_id"] == "sess-globex"
 
 
 def test_a_tenant_cannot_be_chosen_by_the_request(hub):
     async def call(client):
         return await client.call_tool("history_recall", {
-            "query": "vault rotation", "mode": "text", "tenant": "dennis"})
+            "query": "vault rotation", "mode": "text", "tenant": "kim"})
 
-    result = run_calls(hub["tokens"]["eagle"], call)
+    result = run_calls(hub["tokens"]["globex"], call)
     assert result.is_error or data(result)["count"] == 0
 
 
@@ -523,10 +523,10 @@ def test_a_readable_token_file_is_refused(hub):
 def test_env_tokens(monkeypatch, tmp_path):
     monkeypatch.setenv("AGENT_HISTORY_MCP_TOKENS", str(tmp_path / "none.json"))
     monkeypatch.setenv("AGENT_HISTORY_MCP_READ_TOKEN", "r" * 40)
-    monkeypatch.setenv("AGENT_HISTORY_MCP_TENANT", "dennis")
+    monkeypatch.setenv("AGENT_HISTORY_MCP_TENANT", "kim")
     store_ = mcp_auth.TokenStore()
     who = store_.authenticate("r" * 40)
-    assert who.scopes == {"read"} and who.tenant == "dennis"
+    assert who.scopes == {"read"} and who.tenant == "kim"
     assert store_.authenticate("r" * 39) is None
     monkeypatch.setenv("AGENT_HISTORY_MCP_WRITE_TOKEN", "short")
     with pytest.raises(mcp_auth.TokenConfigError, match="shorter"):
@@ -584,7 +584,7 @@ def test_in_process_server_with_a_fixed_identity(hub):
 def test_cli_token_commands(monkeypatch, tmp_path, capsys):
     monkeypatch.setenv("AGENT_HISTORY_MCP_TOKENS", str(tmp_path / "t" / "tokens.json"))
     assert cli.main(["mcp", "token", "add", "router-read", "--scope", "read",
-                     "--tenant", "dennis"]) == 0
+                     "--tenant", "kim"]) == 0
     token = capsys.readouterr().out.strip()
     assert token.startswith(mcp_auth.TOKEN_PREFIX)
     assert mcp_auth.TokenStore().authenticate(token).name == "router-read"

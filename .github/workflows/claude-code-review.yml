@@ -26,7 +26,7 @@ jobs:
 
       - name: Run Claude Code Review
         id: claude-review
-        # Pinned to the same release as Atrium's review workflow, off the
+        # Pinned to the same release as another repository's review workflow, off the
         # moving `v1` tag. Bump deliberately.
         uses: anthropics/claude-code-action@v1.0.162
         with:

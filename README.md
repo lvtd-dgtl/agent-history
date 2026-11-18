@@ -229,7 +229,7 @@ one line per chunk with its date, source, project, and a snippet:
 📚 agent-history recalled 3 memories  ·  /history:inject to toggle
   · 2026-07-08 claude-code/assistant xiu — Fixed and deployed — restart the app…
   · 2026-08-06 claude-code/assistant agent-history — README rewrite for the archive…
-  · 2026-02-25 codex/user openclaw — ssh into clamps, work on openclaw…
+  · 2026-02-25 codex/user openclaw — ssh into opsbot, work on openclaw…
 ```
 
 That's shown only to you, never added to the model's context, so you can
@@ -706,9 +706,9 @@ user; comparison is constant-time, and adding or revoking a token takes effect
 without a restart. Tokens are never accepted in argv and never logged.
 
 ```console
-$ agent-history mcp token add router-read  --scope read  --tenant dennis
+$ agent-history mcp token add router-read  --scope read  --tenant kim
 ahmcp_...                                   # printed once; give it to the router
-$ agent-history mcp token add router-write --scope write --tenant dennis --machine claude-ai
+$ agent-history mcp token add router-write --scope write --tenant kim --machine claude-ai
 $ agent-history mcp token list              # names, scopes, tenants; no secrets
 $ agent-history mcp token revoke router-read
 $ agent-history mcp serve                   # http://127.0.0.1:8765/mcp

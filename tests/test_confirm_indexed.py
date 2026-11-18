@@ -3,7 +3,7 @@
 ship → the inbox → the hub indexer → confirm-indexed, read locally (as on
 the hub) and through the read-only ssh path: ssh is faked by running the real
 `serve-ssh` gate in-process with the forced command's tenant list, so the
-check goes through exactly what Clamps' key allows (search and show).
+check goes through exactly what OpsBot's key allows (search and show).
 """
 from __future__ import annotations
 
@@ -28,14 +28,14 @@ pytestmark = pytest.mark.skipif(
 
 
 def confirm_local(*args, **kw):
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         return confirm.run(JOB, *args, local=True, **kw)
 
 
 @pytest.fixture
 def ssh_hub(hub, monkeypatch):  # noqa: F811
     """AGENT_HISTORY_REMOTE pointing at a fake ssh that runs serve-ssh with
-    `--tenants dennis`, the way the hub's authorized_keys pins Clamps' key."""
+    `--tenants kim`, the way the hub's authorized_keys pins OpsBot's key."""
     monkeypatch.setenv("AGENT_HISTORY_REMOTE", "ssh://ahub@hub.example.invalid")
     calls = []
 
@@ -43,7 +43,7 @@ def ssh_hub(hub, monkeypatch):  # noqa: F811
         calls.append(argv)
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
-            code = serve_ssh.run("dennis", command=argv[-1])
+            code = serve_ssh.run("kim", command=argv[-1])
         return subprocess.CompletedProcess(argv, code, out.getvalue(), err.getvalue())
 
     monkeypatch.setattr(remote.subprocess, "run", fake_run)
@@ -120,7 +120,7 @@ def test_a_refused_key_is_a_credential_error(hub, monkeypatch, capsys):  # noqa:
 
 
 def test_a_tenant_outside_the_key_is_a_config_error(ssh_hub):
-    assert confirm.run(JOB, tenant="eagle") == confirm.EXIT_CONFIG
+    assert confirm.run(JOB, tenant="globex") == confirm.EXIT_CONFIG
 
 
 def test_an_unreachable_hub_is_not_yet(hub, monkeypatch):  # noqa: F811
@@ -134,13 +134,13 @@ def test_an_unreachable_hub_is_not_yet(hub, monkeypatch):  # noqa: F811
 
 
 def test_no_read_path_at_all_is_a_config_error(hub, capsys):  # noqa: F811
-    """Even with a local index around (Clamps has one), no remote and no
+    """Even with a local index around (OpsBot has one), no remote and no
     --local is a config error, not an endless "not yet"."""
     make_job(hub["jobs"], hub["projects"])
     jobs.run(JOB)
     deliver_and_index(hub)
     capsys.readouterr()
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert confirm.run(JOB) == confirm.EXIT_CONFIG
     assert "no hub configured" in capsys.readouterr().err
 
