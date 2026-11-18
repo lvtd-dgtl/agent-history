@@ -1,6 +1,6 @@
 # Index one tenant's inbox on the hub. Instantiate per tenant:
-#   systemctl enable --now agent-history-hub-index@dennis.timer
-#   systemctl enable --now agent-history-hub-index@dennis.path
+#   systemctl enable --now agent-history-hub-index@kim.timer
+#   systemctl enable --now agent-history-hub-index@kim.path
 #
 # One tenant = one index file: AGENT_HISTORY_HOME is the tenant's own data
 # home, AGENT_HISTORY_INBOX the directory its machines upload into

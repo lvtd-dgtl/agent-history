@@ -35,8 +35,8 @@ def tenants(tmp_path, monkeypatch, fake_embed):
     root = tmp_path / "tenants"
     monkeypatch.setenv("AGENT_HISTORY_TENANTS", str(root))
     data = {
-        "dennis": ("dennis ledger rotation plan for the shared vault", "sess-dennis"),
-        "soaring-eagle": ("eagle lexi onboarding plan for the new client", "sess-eagle"),
+        "kim": ("kim ledger rotation plan for the shared vault", "sess-kim"),
+        "globex": ("globex bot1 onboarding plan for the new client", "sess-globex"),
     }
     for name, (text, session) in data.items():
         with config.tenant_home(name):
@@ -69,7 +69,7 @@ def go(command, tenants_arg=None):
     "", "   ", "index", "reindex --force", "reembed", "purge --all --yes",
     "purge --cwd /", "scrub --yes", "serve", "docs add /", "docs list",
     "inject run", "strict on", "ship", "ship --dry-run", "doctor", "sources",
-    "datadir", "trigger x", "serve-ssh", "serve-ssh --tenants dennis",
+    "datadir", "trigger x", "serve-ssh", "serve-ssh --tenants kim",
     "; rm -rf /", "$(id)", "`id`", "| cat /etc/passwd", "&& index",
     "bash -c id", "/usr/bin/env search x", "SEARCH x",
     "search", "search --nonsense x", "search 'unterminated", "show",
@@ -88,7 +88,7 @@ def test_shell_metacharacters_in_a_query_are_just_text(no_side_effects, tenants,
     # words to search for.
     for command in ("search 'x; touch /tmp/pwned'", "search x && index",
                     "search '$(id)'", "search 'a | b'"):
-        assert go(command + " --mode text", "dennis") == 0
+        assert go(command + " --mode text", "kim") == 0
     capsys.readouterr()
 
 
@@ -102,26 +102,26 @@ def test_the_request_comes_from_ssh_original_command(monkeypatch, no_side_effect
 def test_a_hub_with_its_own_remote_never_forwards(monkeypatch, tenants, capsys):
     monkeypatch.setenv("AGENT_HISTORY_REMOTE", "ssh://other@elsewhere")
     monkeypatch.setattr("subprocess.run", lambda *a, **k: pytest.fail("forwarded"))
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert go("search ledger --mode text") == 0
 
 
 def test_plain_mode_searches_this_hubs_index(tenants, capsys):
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert go("search ledger --mode text") == 0
-    assert "dennis ledger" in capsys.readouterr().out
+    assert "kim ledger" in capsys.readouterr().out
 
 
 def test_plain_mode_has_no_tenants(tenants, capsys):
-    assert go("search ledger --tenant dennis") == REJECTED
+    assert go("search ledger --tenant kim") == REJECTED
 
 
 # --- tenancy ------------------------------------------------------------------------
 
 @pytest.mark.parametrize("arg", [
-    "", "Dennis", "../dennis", "dennis/../x", "a/b", "-x", ".hidden", "dennis,",
-    ",dennis", "dennis,,x", "dennis,dennis", "x" * 42, "dennis;id", "den nis",
-    "dennis,../soaring-eagle", "/etc", "..",
+    "", "Kim", "../kim", "kim/../x", "a/b", "-x", ".hidden", "kim,",
+    ",kim", "kim,,x", "kim,kim", "x" * 42, "kim;id", "k im",
+    "kim,../globex", "/etc", "..",
 ])
 def test_invalid_tenant_names_are_rejected(arg, tenants, capsys):
     assert go("search ledger", arg) == REJECTED
@@ -136,75 +136,75 @@ def test_a_tenant_dir_that_escapes_the_root_is_rejected(tenants, tmp_path, capsy
 
 
 def test_a_client_key_cannot_search_another_tenants_history(tenants, capsys):
-    assert go("search ledger --mode text", "soaring-eagle") == 0
-    assert "dennis" not in capsys.readouterr().out.replace("(no matches)", "")
+    assert go("search ledger --mode text", "globex") == 0
+    assert "kim" not in capsys.readouterr().out.replace("(no matches)", "")
 
 
 def test_naming_another_tenant_explicitly_is_refused(tenants, capsys):
-    assert go("search ledger --mode text --tenant dennis", "soaring-eagle") == REJECTED
+    assert go("search ledger --mode text --tenant kim", "globex") == REJECTED
     cap = capsys.readouterr()
     assert cap.out == "" and "not permitted" in cap.err
-    assert go("search ledger --tenant=dennis --json", "soaring-eagle") == REJECTED
-    assert go("show sess-dennis --tenant dennis", "soaring-eagle") == REJECTED
+    assert go("search ledger --tenant=kim --json", "globex") == REJECTED
+    assert go("show sess-kim --tenant kim", "globex") == REJECTED
 
 
 def test_a_client_key_cannot_show_another_tenants_session(tenants, capsys):
-    assert go("show sess-dennis", "soaring-eagle") == 1
+    assert go("show sess-kim", "globex") == 1
     cap = capsys.readouterr()
     assert "nothing indexed" in cap.out and "ledger" not in cap.out + cap.err
-    assert go("show /t/sess-dennis.jsonl", "soaring-eagle") == 1
-    assert go("show sess-eagle", "soaring-eagle") == 0
+    assert go("show /t/sess-kim.jsonl", "globex") == 1
+    assert go("show sess-globex", "globex") == 0
     assert "onboarding" in capsys.readouterr().out
 
 
 def test_the_tenant_list_cannot_come_from_the_client(tenants, capsys):
     # The client controls only SSH_ORIGINAL_COMMAND; `--tenants` is not an
     # option of search or show, and serve-ssh is not an allowed command.
-    assert go("search ledger --tenants dennis", "soaring-eagle") == REJECTED
-    assert go("serve-ssh --tenants dennis", "soaring-eagle") == REJECTED
-    assert go("search ledger --tena dennis", "soaring-eagle") == REJECTED
+    assert go("search ledger --tenants kim", "globex") == REJECTED
+    assert go("serve-ssh --tenants kim", "globex") == REJECTED
+    assert go("search ledger --tena kim", "globex") == REJECTED
     capsys.readouterr()
 
 
 def test_a_multi_tenant_key_merges_and_labels(tenants, capsys):
-    assert go("search plan --mode text", "dennis,soaring-eagle") == 0
+    assert go("search plan --mode text", "kim,globex") == 0
     out = capsys.readouterr().out
-    assert "[dennis]" in out and "[soaring-eagle]" in out
-    assert "dennis ledger" in out and "eagle lexi" in out
+    assert "[kim]" in out and "[globex]" in out
+    assert "kim ledger" in out and "globex bot1" in out
 
 
 def test_a_multi_tenant_key_json_carries_the_tenant(tenants, capsys):
-    assert go("search plan --mode text --json", "dennis,soaring-eagle") == 0
+    assert go("search plan --mode text --json", "kim,globex") == 0
     got = json.loads(capsys.readouterr().out)
-    assert {r["tenant"] for r in got} == {"dennis", "soaring-eagle"}
+    assert {r["tenant"] for r in got} == {"kim", "globex"}
     assert all(r["score"] for r in got), "results are fused across tenants"
 
 
 def test_the_tenant_flag_narrows_within_the_allowed_list(tenants, capsys):
-    assert go("search plan --mode text --tenant dennis", "dennis,soaring-eagle") == 0
+    assert go("search plan --mode text --tenant kim", "kim,globex") == 0
     out = capsys.readouterr().out
-    assert "dennis ledger" in out and "eagle" not in out
-    assert "[dennis]" not in out, "one tenant involved: nothing to label"
+    assert "kim ledger" in out and "globex" not in out
+    assert "[kim]" not in out, "one tenant involved: nothing to label"
 
 
 def test_a_single_tenant_key_sees_no_labels(tenants, capsys):
-    go("search plan --mode text", "soaring-eagle")
+    go("search plan --mode text", "globex")
     assert "[" not in capsys.readouterr().out
 
 
 def test_a_tenant_with_nothing_yet_is_skipped(tenants, capsys):
-    assert go("search plan --mode text", "dennis,not-shipped-yet") == 0
-    assert "dennis ledger" in capsys.readouterr().out
+    assert go("search plan --mode text", "kim,not-shipped-yet") == 0
+    assert "kim ledger" in capsys.readouterr().out
 
 
 def test_show_finds_the_tenant_and_refuses_ambiguity(tenants, capsys):
-    assert go("show sess-eagle", "dennis,soaring-eagle") == 0
-    assert "tenant=soaring-eagle" in capsys.readouterr().out
-    for name in ("dennis", "soaring-eagle"):
+    assert go("show sess-globex", "kim,globex") == 0
+    assert "tenant=globex" in capsys.readouterr().out
+    for name in ("kim", "globex"):
         with config.tenant_home(name):
             db, _ = store.open_for_write()
             put(db, f"shared session id, tenant {name} text", session="same-id")
-    assert go("show same-id", "dennis,soaring-eagle") == 1
+    assert go("show same-id", "kim,globex") == 1
     assert "pass --tenant" in capsys.readouterr().err
-    assert go("show same-id --tenant dennis", "dennis,soaring-eagle") == 0
-    assert "tenant dennis text" in capsys.readouterr().out
+    assert go("show same-id --tenant kim", "kim,globex") == 0
+    assert "tenant kim text" in capsys.readouterr().out

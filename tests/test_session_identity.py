@@ -450,11 +450,11 @@ def test_hub_keeps_the_shippers_uid_and_links(inbox, fake_embed):
 
 
 def test_hub_derives_from_the_inbox_machine_not_the_claim(inbox, fake_embed):
-    # The shipper calls itself "dennis-laptop"; its inbox directory is "laptop".
+    # The shipper calls itself "kim-laptop"; its inbox directory is "laptop".
     # Only the directory is authenticated, so the claim is ignored.
     drop(inbox, "laptop", {"text": "shipped under a different name, long",
                            "session_uid": sessions.derive_uid(
-                               "claude-code", "dennis-laptop", SID)})
+                               "claude-code", "kim-laptop", SID)})
     index.run()
     assert uids_of(store.open_for_read(), session_id=SID) == {
         sessions.derive_uid("claude-code", "laptop", SID)}

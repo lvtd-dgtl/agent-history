@@ -205,9 +205,9 @@ def test_asking_for_this_machine_skips_the_hub(ssh, local_index, capsys):
 
 def test_tenant_is_passed_to_the_hub_and_refused_locally(ssh, local_index, capsys):
     ssh.answer = Done("[]")
-    search.run("deploy pipeline", mode="text", tenant="dennis")
-    assert shlex.split(ssh[0]["argv"][-1])[shlex.split(ssh[0]["argv"][-1]).index("--tenant") + 1] == "dennis"
-    assert search.run("x", where="local", tenant="dennis") == 1
+    search.run("deploy pipeline", mode="text", tenant="kim")
+    assert shlex.split(ssh[0]["argv"][-1])[shlex.split(ssh[0]["argv"][-1]).index("--tenant") + 1] == "kim"
+    assert search.run("x", where="local", tenant="kim") == 1
 
 
 def test_cli_flags_reach_search(ssh, local_index, capsys):
