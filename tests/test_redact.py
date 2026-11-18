@@ -78,7 +78,7 @@ def test_specific_class_beats_the_generic_ones():
     "password=xxxxxxxx",
     "sha256 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
     "base64 aGVsbG8gd29ybGQ=",
-    "sudo: linuxuser : PWD=/home/linuxuser/apps ; USER=root",
+    "sudo: deployer : PWD=/home/deployer/apps ; USER=root",
     "MYSQL_ROOT_PASSWORD=${DB_ROOT_PASSWORD:?DB_ROOT_PASSWORD must be set}",
     "export GITHUB_TOKEN=GH_TOKEN_FROM_VAULT",
     "tokens embedded in URLs (https://user:token@github.com) leak",
