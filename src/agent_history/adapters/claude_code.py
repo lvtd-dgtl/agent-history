@@ -128,19 +128,21 @@ def profile_of(origin: str) -> str | None:
     """The config profile a Claude Code origin came from.
 
     "claude" for ~/.claude/projects/..., "claude-org" for
-    ~/.claude-org/projects/..., the directory name for a $CLAUDE_CONFIG_DIR
-    elsewhere. Read from the stored path, so it needs no extra column and
-    works for chunks indexed before profiles were tracked. None when the
-    origin is not under a <profile>/projects/ directory (e.g. a custom
-    $AGENT_HISTORY_PROJECTS root).
+    ~/.claude-org/projects/..., and so on for any .claude* directory. Read
+    from the stored path, so it needs no extra column and works for chunks
+    indexed before profiles were tracked. None for any other root, including
+    a $CLAUDE_CONFIG_DIR or $AGENT_HISTORY_PROJECTS not named .claude*: a
+    directory called "projects" alone says nothing about which account wrote it.
     """
     parts = PurePath(origin).parts
     # The last "projects" segment: a home or repo path may contain the word,
     # but Claude Code's own slugs and session directories never equal it.
     for i in range(len(parts) - 1, 0, -1):
         if parts[i] == "projects":
-            name = parts[i - 1].lstrip(".")
-            return name or None
+            parent = parts[i - 1]
+            if parent == ".claude" or parent.startswith(".claude-"):
+                return parent[1:]
+            return None
     return None
 
 

@@ -83,7 +83,8 @@ def test_claude_config_dir_outside_home_is_picked_up(home, isolated_env, monkeyp
 
     assert config.claude_profile_dirs() == [elsewhere / "projects"]
     got = _by_session(ClaudeCodeAdapter().records())
-    assert profile_of(got["w-1"].origin) == "work-account"
+    # Indexed, but not named: "work-account/projects" is not a .claude* profile.
+    assert profile_of(got["w-1"].origin) is None
 
 
 def test_claude_config_dir_pointing_at_a_home_profile_is_not_doubled(home, monkeypatch):
@@ -149,7 +150,10 @@ def test_windows_profile_with_only_a_second_account_is_found(home, isolated_env,
     ("/home/u/.claude-org/projects/-home-u/abc/subagents/agent-1.jsonl", "claude-org"),
     ("/home/u/projects/.claude-org/projects/-home-u-projects/abc.jsonl", "claude-org"),
     ("/mnt/c/Users/me/.claude-org/projects/C--Users-me/abc.jsonl", "claude-org"),
-    ("/srv/work-account/projects/-w/abc.jsonl", "work-account"),
+    ("/home/u/.claude-client-x/projects/-w/abc.jsonl", "claude-client-x"),
+    ("/srv/work-account/projects/-w/abc.jsonl", None),
+    ("/tmp/pytest-of-u/test_x0/projects/proj/abc.jsonl", None),
+    ("/home/u/.claudette/projects/-w/abc.jsonl", None),
     ("/tmp/custom-root/-w/abc.jsonl", None),
     ("", None),
 ])
