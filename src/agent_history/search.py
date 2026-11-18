@@ -17,6 +17,7 @@ import json
 import sys
 
 from . import embed, store
+from .adapters.claude_code import AGENT as CLAUDE_AGENT, profile_of
 
 PREVIEW_CHARS = 600
 JSON_PREVIEW_CHARS = 500
@@ -151,6 +152,9 @@ def _as_dict(row: tuple) -> dict:
         "text": text,
         "distance": distance,
         "score": score,
+        # Which Claude Code config profile (account) the chunk came from;
+        # derived from the stored path, so no schema change is involved.
+        "profile": profile_of(origin or "") if agent == CLAUDE_AGENT else None,
     }
 
 
@@ -168,9 +172,12 @@ def _print_row(position: int, result: dict, full: bool) -> None:
     else:
         ranking = "text-match"
     timestamp = (result["timestamp"] or "")[:16]
+    # Tag only non-default profiles, so ~/.claude output reads as before.
+    profile = result.get("profile")
+    tag = f"[{profile}]" if profile and profile != "claude" else ""
     print(
         f"#{position}  {ranking}  {timestamp}  "
-        f"{result['agent']}/{result['role']}  {result['cwd'] or '?'}"
+        f"{result['agent']}{tag}/{result['role']}  {result['cwd'] or '?'}"
     )
     print(f"    file: {result['file']}")
     text = result["text"]
