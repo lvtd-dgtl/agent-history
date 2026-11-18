@@ -56,7 +56,7 @@ def records():
 
 
 def test_plain_text_messages_are_kept(hermes):
-    hermes("user", "what happened to the winch life bot")
+    hermes("user", "what happened to the support bot")
     hermes("assistant", "the old systemd unit auto-started it after the reboot")
     got = records()
     assert [r.role for r in got] == ["user", "assistant"]
@@ -114,7 +114,7 @@ def test_schema_without_cwd_column_uses_profile_name(isolated_env, monkeypatch):
 
 def test_multiple_profiles_are_all_read(isolated_env, monkeypatch):
     root = isolated_env / "hermes3"
-    for name in ("hermes-ops", "hermes-honors"):
+    for name in ("hermes-ops", "hermes-support"):
         db = make_profile(root, name=name)
         db.execute("INSERT INTO sessions (id, source, system_prompt, "
                    "started_at, cwd) VALUES ('s', 'cli', 'x', 1, '/w')")
@@ -126,7 +126,7 @@ def test_multiple_profiles_are_all_read(isolated_env, monkeypatch):
     import os
     monkeypatch.setenv(
         "AGENT_HISTORY_HERMES_DIRS",
-        os.pathsep.join(str(root / n) for n in ("hermes-ops", "hermes-honors")))
+        os.pathsep.join(str(root / n) for n in ("hermes-ops", "hermes-support")))
     assert len(records()) == 2
 
 
