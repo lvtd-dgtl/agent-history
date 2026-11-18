@@ -11,6 +11,19 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+### Added
+- **Every Claude Code config profile is indexed.** Sessions from a second
+  account (`CLAUDE_CONFIG_DIR=~/.claude-org`, or any `~/.claude-<name>`) were
+  invisible unless the directory was added by hand. The Claude Code adapter
+  now scans every `~/.claude*/projects`, plus `$CLAUDE_CONFIG_DIR/projects`,
+  on the Linux side and in the WSL Windows profile, reading each directory
+  once however it is reached. Project memory files in those profiles are
+  indexed too. `AGENT_HISTORY_PROJECTS` still overrides discovery and
+  `AGENT_HISTORY_EXTRA_DIRS` still adds to it.
+- **Search shows which profile a hit came from**: a `profile` field in JSON
+  output and a `claude-code[claude-org]` tag in text output. It is read from
+  the stored path, so no schema change or reindex is needed.
+
 ### Fixed
 - **Hybrid search's full-text half works on natural-language queries.** Terms
   were joined with FTS5's implicit AND, so a prose query matched only chunks
