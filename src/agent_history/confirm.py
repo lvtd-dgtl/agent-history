@@ -5,9 +5,9 @@ job's header, its seal, and every conversation the seal lists are findable by
 job id, with the same functions the hub's MCP tools use (`search.search_rows`
 behind `history_recall`, `show.rows_for` behind `history_show`).
 
-It runs on Clamps' side, never as claude-jobs: jobs run arbitrary code, and a
+It runs on OpsBot's side, never as claude-jobs: jobs run arbitrary code, and a
 read credential there would expose all of the user's history to every job.
-The read path is the one Clamps already has: `AGENT_HISTORY_REMOTE` and a key
+The read path is the one OpsBot already has: `AGENT_HISTORY_REMOTE` and a key
 pinned to `agent-history serve-ssh` (search and show only, tenants fixed by
 the hub's admin). Without a remote it reads the local index (on the hub, and
 in tests).
@@ -193,7 +193,7 @@ def _write_receipt(path: str, result: dict) -> None:
 def run(job_id: str, *, as_json: bool = False, receipt: str | None = None,
         tenant: str | None = None, local: bool = False, reader=None) -> int:
     """``local`` reads this machine's index (on the hub itself). Without it
-    a hub must be configured: Clamps has a local index of its own, and
+    a hub must be configured: OpsBot has a local index of its own, and
     reading that by mistake would report "not yet" forever."""
     def fail(code: int, state: str, why: str) -> int:
         result = {"job_id": job_id, "state": state, "error": why}

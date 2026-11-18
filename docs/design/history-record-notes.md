@@ -21,7 +21,7 @@ server and tests. The evidence:
   lists `history` and `history-rec` among its Router connectors. Duet has no
   Router client of its own; it rides the `claude-ai` operator token (memory
   note `reference_claude_duet`). So every `history_record` from Duet lands in
-  `inbox/dennis/claude-ai/` and is indistinguishable from an ordinary
+  `inbox/kim/claude-ai/` and is indistinguishable from an ordinary
   claude.ai chat's record.
 - **Writes.** Duet asks Claude Code to "record finished work with
   `history-rec__history_record` AND in the Studio task/note, so Duet doesn't
@@ -35,14 +35,14 @@ server and tests. The evidence:
   record. That is `history_recall` (the profile instruction suggests
   `surface=claude-ai-chat` to narrow to records) and `history_show` on a
   hit's session (`claude-ai-chat-<chat uuid or record id>`).
-- **What is on the hub** (read-only search from MSI, Nov 1): 3 record
+- **What is on the hub** (read-only search from pc1, Nov 1): 3 record
   sessions, all from machine `claude-ai`, dated Oct 29–30, none with a
   `chat_url` (session ids are `claude-ai-chat-rec-…`). So callers often omit
   the link, and a record without one must keep working.
 - **Not established:** Duet's exact queries. The Router's audit log records
   client, server and tool name per call (not arguments), and Duet shares the
   `claude-ai` client, so even that log cannot separate Duet from claude.ai
-  chats. Reading it is a fleet action (Dennis's step, below).
+  chats. Reading it is a fleet action (the owner's step, below).
 
 So the compatibility target is: **the same tool, the same arguments, and the
 same reads still finding records**: `history_recall` with default arguments
@@ -126,12 +126,12 @@ were first written; they are redacted again on the way into notes.
 | Ollama down during migration | notes are written without vectors (text search works); chunks are still removed |
 | a record whose chunks don't stitch cleanly | migrated with the chunks joined in order, flagged in the dry run |
 
-## Dennis's steps
+## The owner's steps
 
 1. Upgrade the hub's agent-history (indexer and MCP server) to a version with
    C and D, restart `agent-history-mcp`, refresh the Router. Approval needed.
 2. Dry run, then migrate, per tenant:
-   `sudo -u ahub env AGENT_HISTORY_HOME=/home/ahub/tenants/dennis /home/ahub/.local/bin/agent-history notes migrate-records`
+   `sudo -u ahub env AGENT_HISTORY_HOME=/home/ahub/tenants/kim /home/ahub/.local/bin/agent-history notes migrate-records`
    then the same with `--yes`.
 3. Optional: in the claude.ai profile instruction and Duet's roster, ask
    Duet to pass `duet_channel_id` and `duet_message_id` to `history_record`,
@@ -142,5 +142,5 @@ were first written; they are redacted again on the way into notes.
 ## No Duet PR
 
 Duet has no repository to change: its behaviour comes from its instructions
-and the Router. The optional argument change is an instruction for Dennis to
+and the Router. The optional argument change is an instruction for the owner to
 give Duet (step 3), and the updated profile instruction is in this PR.

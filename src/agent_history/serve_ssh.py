@@ -2,7 +2,7 @@
 
 In the hub's authorized_keys a read-only key looks like::
 
-    command="agent-history serve-ssh --tenants dennis",restrict ssh-ed25519 ...
+    command="agent-history serve-ssh --tenants kim",restrict ssh-ed25519 ...
 
 sshd then runs this instead of whatever the client asked for, and hands the
 client's request over in ``$SSH_ORIGINAL_COMMAND``. This module is the whole

@@ -108,7 +108,7 @@ def _build_parser() -> argparse.ArgumentParser:
     cix = sub.add_parser(
         "confirm-indexed",
         help="has the hub indexed a claude -p job? 0 yes, 1 not yet or partial, "
-             "2 config or credential error (run on Clamps' side, never as claude-jobs)")
+             "2 config or credential error (run on OpsBot's side, never as claude-jobs)")
     cix.add_argument("--job", required=True, metavar="JOB_ID")
     cix.add_argument("--json", action="store_true", dest="as_json")
     cix.add_argument("--receipt", metavar="FILE",

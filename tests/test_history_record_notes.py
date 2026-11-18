@@ -26,8 +26,8 @@ def index_hub(hub):  # noqa: F811
     mp = pytest.MonkeyPatch()
     try:
         mp.setenv("AGENT_HISTORY_HUB", "1")
-        mp.setenv("AGENT_HISTORY_INBOX", str(hub["inbox"] / "dennis"))
-        with config.tenant_home("dennis"):
+        mp.setenv("AGENT_HISTORY_INBOX", str(hub["inbox"] / "kim"))
+        with config.tenant_home("kim"):
             index.run()
             notes.index_inbox()
     finally:
@@ -47,7 +47,7 @@ def read(hub, tool, args):  # noqa: F811
 
 
 def chunks_like(pattern):
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         db = store.open_for_read(check_model=False)
         try:
             return db.execute("SELECT COUNT(*) FROM chunks WHERE agent = 'claude-ai-chat' "
@@ -84,7 +84,7 @@ def test_filters_keep_their_meaning(hub):  # noqa: F811
     assert all(h["agent"] != "claude-ai-chat" for h in other["results"])
     by_project = data(read(hub, "history_recall", {**q, "cwd": "agent-history"}))
     assert any(h["agent"] == "claude-ai-chat" for h in by_project["results"])
-    wrong_project = data(read(hub, "history_recall", {**q, "cwd": "storm-check"}))
+    wrong_project = data(read(hub, "history_recall", {**q, "cwd": "example-repo"}))
     assert not any(h["agent"] == "claude-ai-chat" for h in wrong_project["results"])
 
 
@@ -119,7 +119,7 @@ def test_duet_ids_give_the_record_a_duet_source(hub):  # noqa: F811
 
 def test_claude_code_ids_give_a_claude_code_source(hub):  # noqa: F811
     data(write(hub, chat_url=None, session_id="5f2b8c1e-0000-4000-8000-00000000aaaa",
-               session_machine="MSI", job_id="cj_20261101T120000Z_a1b2c3"))
+               session_machine="pc1", job_id="cj_20261101T120000Z_a1b2c3"))
     note = notes.parse(record_files(hub)[0].read_text())
     assert note["source"]["kind"] == "claude-code"
     assert note["source"]["job_id"] == "cj_20261101T120000Z_a1b2c3"
@@ -156,7 +156,7 @@ def test_only_history_record_can_use_a_record_source():
 
 # ------------------------------------------------------------------ diversion
 
-LEGACY_TEXT = ("[claude.ai chat record] Paused five Clamps crons\nProject: Emerald Media ops\n"
+LEGACY_TEXT = ("[claude.ai chat record] Paused five OpsBot crons\nProject: Example Co ops\n"
                "Record: rec-9b7ddcbc2c1d4e58a1eb\n\nSummary:\nPaused the crons that "
                "duplicate Duet's routines.\n\nDecisions:\n- resume if anyone misses them")
 
@@ -164,22 +164,22 @@ LEGACY_TEXT = ("[claude.ai chat record] Paused five Clamps crons\nProject: Emera
 def legacy_line(record_id="rec-9b7ddcbc2c1d4e58a1eb", text=LEGACY_TEXT):
     return json.dumps({"v": 1, "machine": "claude-ai", "agent": "claude-ai-chat",
                        "origin": f"mcp:claude-ai-chat/{record_id}",
-                       "session_id": f"claude-ai-chat-{record_id}", "cwd": "Emerald Media ops",
+                       "session_id": f"claude-ai-chat-{record_id}", "cwd": "Example Co ops",
                        "timestamp": "2026-10-29T23:49:00Z", "role": "summary", "text": text})
 
 
 def test_an_old_format_record_line_goes_to_notes_not_the_transcript_index(hub):  # noqa: F811
-    inbox = hub["inbox"] / "dennis" / "claude-ai"
+    inbox = hub["inbox"] / "kim" / "claude-ai"
     inbox.mkdir(parents=True, exist_ok=True)
     (inbox / "20261029T234900Z-old.jsonl").write_text(legacy_line() + "\n" + legacy_line() + "\n")
     index_hub(hub)
-    assert chunks_like("Paused five Clamps crons") == 0
-    with config.tenant_home("dennis"):
-        hits = notes.search("Clamps crons duplicate", mode="text", records=True)
+    assert chunks_like("Paused five OpsBot crons") == 0
+    with config.tenant_home("kim"):
+        hits = notes.search("OpsBot crons duplicate", mode="text", records=True)
     assert len(hits) == 1
     assert hits[0]["record_session"] == "claude-ai-chat-rec-9b7ddcbc2c1d4e58a1eb"
     assert hits[0]["source"]["kind"] == "record"
-    found = data(read(hub, "history_recall", {"query": "Clamps crons", "mode": "text",
+    found = data(read(hub, "history_recall", {"query": "OpsBot crons", "mode": "text",
                                               "surface": "claude-ai-chat"}))
     assert found["results"][0]["excerpt"].startswith("[claude.ai chat record] Paused five")
 
@@ -192,7 +192,7 @@ def seed_old_records(hub):  # noqa: F811
     long_summary = " ".join(f"step {n} of the long migration plan." for n in range(80))
     long_text = (f"[claude.ai chat record] A long record\nProject: agent-history\n"
                  f"Record: rec-aaaaaaaaaaaa\n\nSummary:\n{long_summary}")
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         db, _ = store.open_for_write()
         for record_id, text in (("rec-9b7ddcbc2c1d4e58a1eb", LEGACY_TEXT),
                                 ("rec-aaaaaaaaaaaa", long_text)):
@@ -214,12 +214,12 @@ def seed_old_records(hub):  # noqa: F811
 def test_migrate_records_dry_run_then_move(hub, capsys):  # noqa: F811
     long_text = seed_old_records(hub)
     assert chunks_like("chat record") == 2
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert cli.main(["notes", "migrate-records"]) == 0
     out = capsys.readouterr().out
     assert "2 record(s), 3 chunk(s)" in out and "dry run" in out
     assert chunks_like("chat record") == 2
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert not notes.db_path().exists() or not notes.search("long migration", mode="text")
         assert cli.main(["notes", "migrate-records", "--yes"]) == 0
         backups = list(config.data_home().glob("migrate-records-*.jsonl"))
@@ -231,13 +231,13 @@ def test_migrate_records_dry_run_then_move(hub, capsys):  # noqa: F811
     assert hit["text"] == long_text, "the overlapping chunks are stitched back exactly"
     shown = data(read(hub, "history_show", {"session": "claude-ai-chat-rec-aaaaaaaaaaaa"}))
     assert shown["messages"][0]["text"].startswith("[claude.ai chat record] A long record")
-    found = data(read(hub, "history_recall", {"query": "Clamps crons", "mode": "text"}))
+    found = data(read(hub, "history_recall", {"query": "OpsBot crons", "mode": "text"}))
     assert found["results"][0]["agent"] == "claude-ai-chat"
 
 
 def test_migrate_records_is_idempotent(hub, capsys):  # noqa: F811
     seed_old_records(hub)
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         assert notes.migrate_records(apply=True) == 0
         assert notes.migrate_records(apply=True) == 0
         db, _ = notes.open_store(write=False)

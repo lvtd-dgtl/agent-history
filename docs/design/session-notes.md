@@ -7,7 +7,7 @@ Status: draft, for review with the PR that implements it.
 Next to the raw transcripts, keep a short, searchable **note** per stretch of
 conversation that says what was talked about and points back to the exact
 source, so an agent can find the right conversation fast and then read the
-full transcript. Dennis, Nov 1: "a side system... that allows you to log
+full transcript. The owner, Nov 1: "a side system... that allows you to log
 session notes as you go, either when sessions come to an end or after a few
 minutes of inactivity, just kind of summarizing what was talked about in that
 conversation and providing references for you to get back to it."
@@ -105,7 +105,7 @@ Both, through one validated path:
 
 The hub does not summarize: it has only an embedding model.
 
-## The sweep's summarizer: a model summary (Dennis, Nov 1)
+## The sweep's summarizer: a model summary (the owner, Nov 1)
 
 Sessions wander, so the first prompt and the last message don't represent
 them. The default summarizer is a model:
@@ -137,7 +137,7 @@ them. The default summarizer is a model:
 **Redaction gap closed.** `redact` now catches bare 1Password service-account
 tokens (`ops_` followed by 40+ token characters) and Scribe agent keys
 (`scrb_agt_` followed by 16+), with no `NAME=` in front. Short names such as
-the Linux user `ops_a0dc6f0c` are left alone. This applies to transcripts
+the Linux user `ops_1a2b3c4d` are left alone. This applies to transcripts
 too, everywhere `redact` runs.
 
 **`notes scrub`: the one admin exception to append-only.**
@@ -195,5 +195,5 @@ agent-history notes search "login redirect"                  → the same, from 
   searched through MCP on the hub or locally.
 - `history_record`: it still writes chat summaries into the transcript index
   as `role: "summary"`. That is the mixing this piece avoids. Moving
-  `history_record` onto notes is Dennis's call (Duet relies on it), so it is
+  `history_record` onto notes is the owner's call (Duet relies on it), so it is
   left untouched here.

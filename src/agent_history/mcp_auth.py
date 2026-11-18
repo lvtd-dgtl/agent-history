@@ -5,8 +5,8 @@ A token is a random string the MCP client (the router) sends as
 file that must be ``0600`` and owned by the user running the server:
 
     {"tokens": [
-      {"name": "router-read",  "sha256": "<hex>", "scope": ["read"],  "tenant": "dennis"},
-      {"name": "router-write", "sha256": "<hex>", "scope": ["write"], "tenant": "dennis",
+      {"name": "router-read",  "sha256": "<hex>", "scope": ["read"],  "tenant": "kim"},
+      {"name": "router-write", "sha256": "<hex>", "scope": ["write"], "tenant": "kim",
        "machine": "claude-ai"}
     ]}
 

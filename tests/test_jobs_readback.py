@@ -32,14 +32,14 @@ def hub(tmp_path, monkeypatch, fake_embed):
     landing = tmp_path / "landing"
     landing.mkdir()
     inbox = tmp_path / "inbox"
-    (inbox / "dennis" / "claude-jobs").mkdir(parents=True)
+    (inbox / "kim" / "claude-jobs").mkdir(parents=True)
     monkeypatch.setenv("AGENT_HISTORY_TENANTS", str(tmp_path / "tenants"))
     monkeypatch.setenv("AGENT_HISTORY_MCP_TOKENS", str(tmp_path / "tokens.json"))
     monkeypatch.setenv("AGENT_HISTORY_JOBS_DIR", str(jobs_root))
     monkeypatch.setenv("AGENT_HISTORY_MACHINE", "claude-jobs")
     monkeypatch.setenv("AGENT_HISTORY_HUB_INGEST", "ahub@example.invalid:")
     monkeypatch.setattr(ship, "upload", landing_upload(landing))
-    token = mcp_auth.add_token("router-read", ["read"], "dennis")
+    token = mcp_auth.add_token("router-read", ["read"], "kim")
     return {"jobs": jobs_root, "projects": tmp_path / "projects",
             "landing": landing, "inbox": inbox, "token": token,
             "monkeypatch": monkeypatch}
@@ -47,15 +47,15 @@ def hub(tmp_path, monkeypatch, fake_embed):
 
 def deliver_and_index(hub):
     """What rrsync and the hub's index unit do with the shipped batches."""
-    target = hub["inbox"] / "dennis" / "claude-jobs"
+    target = hub["inbox"] / "kim" / "claude-jobs"
     for batch in hub["landing"].glob("*.jsonl"):
         shutil.move(str(batch), target / batch.name)
     mp = hub["monkeypatch"]
     with mp.context() as m:
         m.setenv("AGENT_HISTORY_HUB", "1")
-        m.setenv("AGENT_HISTORY_INBOX", str(hub["inbox"] / "dennis"))
+        m.setenv("AGENT_HISTORY_INBOX", str(hub["inbox"] / "kim"))
         m.setenv("AGENT_HISTORY_MACHINE", "hub")
-        with config.tenant_home("dennis"):
+        with config.tenant_home("kim"):
             assert index.run() == 0
     assert not list(target.glob("*.jsonl")), "the indexer retires what it read"
 
