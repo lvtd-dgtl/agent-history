@@ -33,9 +33,10 @@ BASE = "http://127.0.0.1:8765"
 
 
 def put(db, text, *, session, machine="pc", cwd="/work/alpha",
-        timestamp="2026-01-01T00:00:00Z", role="user", agent="claude-code"):
+        timestamp="2026-01-01T00:00:00Z", role="user", agent="claude-code",
+        origin=None):
     store.insert_chunk(
-        db, agent=agent, origin=f"/home/someone/{session}.jsonl",
+        db, agent=agent, origin=origin or f"/home/someone/{session}.jsonl",
         session_id=session, cwd=cwd, timestamp=timestamp, role=role, text=text,
         content_hash=hashlib.sha256(text.encode()).hexdigest(),
         vector=embed.embed(text), machine=machine)
@@ -166,14 +167,34 @@ def test_recall_returns_bounded_hits_without_paths(hub):
     out = data(run_calls(hub["tokens"]["read"], call))
     assert out["count"] >= 1
     hit = out["results"][0]
-    assert set(hit) == {"rank", "timestamp", "agent", "machine", "project", "session_id",
-                        "session", "role", "score", "distance", "excerpt"}
+    assert set(hit) == {"rank", "timestamp", "agent", "machine", "profile", "project",
+                        "session_id", "session", "role", "score", "distance", "excerpt"}
     assert hit["session_id"] == "sess-kim" and hit["machine"] == "pc"
     assert hit["project"] == "/work/alpha"
     assert all(len(h["excerpt"]) <= mcp_server.EXCERPT_CHARS + 2
                for h in out["results"])
     # The origin (a file path on the machine that shipped it) is never sent.
     assert "/home/someone" not in json.dumps(out)
+
+
+def test_recall_names_the_claude_profile_but_not_the_path(hub):
+    """A second Claude account (CLAUDE_CONFIG_DIR=~/.claude-org) is told apart
+    by profile name; the path it was read from still never leaves the hub."""
+    with config.tenant_home("kim"):
+        db, _ = store.open_for_write()
+        put(db, "org account staging cutover checklist for the launch",
+            session="sess-org",
+            origin="/home/someone/.claude-org/projects/-work/sess-org.jsonl")
+        db.commit()
+
+    async def call(client):
+        return await client.call_tool("history_recall",
+                                      {"query": "staging cutover checklist", "mode": "text"})
+
+    out = data(run_calls(hub["tokens"]["read"], call))
+    hit = next(h for h in out["results"] if h["session_id"] == "sess-org")
+    assert hit["profile"] == "claude-org"
+    assert ".claude-org" not in json.dumps(out)
 
 
 def test_recall_hybrid_uses_the_embedder(hub, fake_embed):

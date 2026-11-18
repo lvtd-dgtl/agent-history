@@ -20,6 +20,7 @@ import json
 import sys
 
 from . import config, embed, remote, store
+from .adapters.claude_code import AGENT as CLAUDE_AGENT, profile_of
 
 PREVIEW_CHARS = 600
 JSON_PREVIEW_CHARS = 500
@@ -209,7 +210,17 @@ def _merge_hub(query: str, local: list[dict], *, full: bool, k: int,
               file=sys.stderr)
         return local
 
-    return fuse([local, [{**_HUB_DEFAULTS, **r} for r in hub]], sort=sort, k=k)
+    return fuse([local, [_with_profile({**_HUB_DEFAULTS, **r}) for r in hub]],
+                sort=sort, k=k)
+
+
+def _with_profile(result: dict) -> dict:
+    """Fill in the Claude profile for a hub hit. Hubs that predate profile
+    tracking do not send it, but the shipped origin is the original path, so
+    it can be read here the same way as for a local chunk."""
+    if result.get("profile") is None and result.get("agent") == CLAUDE_AGENT:
+        result["profile"] = profile_of(result.get("file") or "")
+    return result
 
 
 def fuse(lists: list[list[dict]], *, sort: str, k: int) -> list[dict]:
@@ -253,6 +264,9 @@ def _as_dict(row: tuple) -> dict:
         "sidechain": bool(sidechain),
         "distance": distance,
         "score": score,
+        # Which Claude Code config profile (account) the chunk came from;
+        # derived from the stored path, so no schema change is involved.
+        "profile": profile_of(origin or "") if agent == CLAUDE_AGENT else None,
     }
 
 
@@ -286,9 +300,12 @@ def _print_row(position: int, result: dict, full: bool,
         where = f"  @{result['machine']}"
     if label_tenant and result.get("tenant"):
         where += f"  [{result['tenant']}]"
+    # Tag only non-default Claude profiles, so ~/.claude output reads as before.
+    profile = result.get("profile")
+    tag = f"[{profile}]" if profile and profile != "claude" else ""
     print(
         f"#{position}  {ranking}  {timestamp}  "
-        f"{result['agent']}/{result['role']}{sub_label(result)}  "
+        f"{result['agent']}{tag}/{result['role']}{sub_label(result)}  "
         f"{result['cwd'] or '?'}{where}"
     )
     print(f"    file: {result['file']}")

@@ -12,6 +12,19 @@ they have no corresponding tags.
 ## [Unreleased]
 
 ### Added
+- **Every Claude Code config profile is indexed.** Sessions from a second
+  account (`CLAUDE_CONFIG_DIR=~/.claude-org`, or any `~/.claude-<name>`) were
+  invisible unless the directory was added by hand. The Claude Code adapter
+  now scans every `~/.claude*/projects`, plus `$CLAUDE_CONFIG_DIR/projects`,
+  on the Linux side and in the WSL Windows profile, reading each directory
+  once however it is reached. Project memory files in those profiles are
+  indexed too. `AGENT_HISTORY_PROJECTS` still overrides discovery and
+  `AGENT_HISTORY_EXTRA_DIRS` still adds to it.
+- **Results say which profile a hit came from**: a `profile` field in
+  `search --json` and in the MCP `history_recall` results (a name such as
+  `claude-org`, never a path), and a `claude-code[claude-org]` tag in text
+  output. It is read from the stored origin, so no schema change or reindex is
+  needed, and hits from a hub that predates this are tagged on the client.
 - **Parent link for fresh-context sessions (Claude Code)**: a session whose
   first user message begins with the line `Parent session id: <uuid>` (what
   Claude desktop's `start_session` briefs should carry) is linked to that
