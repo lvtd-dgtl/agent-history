@@ -1,6 +1,7 @@
 """Claude Code adapter.
 
-Claude Code writes one JSONL file per session under ~/.claude/projects/<slug>/,
+Claude Code writes one JSONL file per session under ~/.claude/projects/<slug>/
+(or ~/.claude-<name>/projects/ for each other config profile),
 one JSON object per line. Subagent transcripts live in nested directories, so
 the scan is recursive.
 
@@ -19,7 +20,7 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import json
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Iterator
 
 from .. import config
@@ -42,8 +43,9 @@ class ClaudeCodeAdapter:
     name = AGENT
 
     def roots(self) -> list[Path]:
-        roots = [config.claude_projects_dir(), *config.extra_dirs()]
-        roots += [home / ".claude/projects" for home in config.wsl_windows_homes()]
+        # Every config profile (~/.claude, ~/.claude-org, $CLAUDE_CONFIG_DIR,
+        # the WSL Windows side), then any explicitly named extra roots.
+        roots = [*config.claude_profile_dirs(), *config.extra_dirs()]
         # Preserve order while dropping duplicates and absent paths.
         seen: set[Path] = set()
         out: list[Path] = []
@@ -222,6 +224,26 @@ def _bridge_kind(bridge_id: object) -> str | None:
             return "cse"
         if bridge_id.startswith("session_") and len(bridge_id) > 8:
             return "bridge"
+    return None
+
+
+def profile_of(origin: str) -> str | None:
+    """The config profile a Claude Code origin came from.
+
+    "claude" for ~/.claude/projects/..., "claude-org" for
+    ~/.claude-org/projects/..., the directory name for a $CLAUDE_CONFIG_DIR
+    elsewhere. Read from the stored path, so it needs no extra column and
+    works for chunks indexed before profiles were tracked. None when the
+    origin is not under a <profile>/projects/ directory (e.g. a custom
+    $AGENT_HISTORY_PROJECTS root).
+    """
+    parts = PurePath(origin).parts
+    # The last "projects" segment: a home or repo path may contain the word,
+    # but Claude Code's own slugs and session directories never equal it.
+    for i in range(len(parts) - 1, 0, -1):
+        if parts[i] == "projects":
+            name = parts[i - 1].lstrip(".")
+            return name or None
     return None
 
 

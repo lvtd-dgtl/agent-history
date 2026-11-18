@@ -31,7 +31,7 @@ that knows where that agent keeps its transcripts and how to read them:
 
 | source | reads | format |
 |---|---|---|
-| **Claude Code** | `~/.claude/projects/**` + project memory `*.md`, including the WSL Windows side | JSONL |
+| **Claude Code** | every `~/.claude*/projects/**` profile (and `$CLAUDE_CONFIG_DIR`) + project memory `*.md`, including the WSL Windows side | JSONL |
 | **OpenAI Codex CLI** | `~/.codex/sessions/**` rollouts, including the WSL Windows side | JSONL |
 | **OpenCode** | `~/.local/share/opencode/opencode.db` | SQLite |
 | **Hermes** | `~/.hermes*/state.db`, one per profile | SQLite |
@@ -791,9 +791,20 @@ text. Re-indexing skips anything already embedded, so the expensive step only
 ever runs on genuinely new content — identically for file-backed and
 database-backed adapters, with no per-source watermark bookkeeping.
 
-Claude Code project memory files (`~/.claude/projects/*/memory/*.md`) and
+Claude Code project memory files (`~/.claude*/projects/*/memory/*.md`) and
 OpenClaw workspace markdown are indexed alongside transcripts: hand-written,
 durable, and often the single most useful thing a search surfaces.
+
+**Every Claude Code profile is scanned.** A second account run with
+`CLAUDE_CONFIG_DIR=~/.claude-org` keeps its own `projects/` tree; the Claude
+Code adapter reads `~/.claude/projects`, every `~/.claude-<name>/projects`,
+and `$CLAUDE_CONFIG_DIR/projects` when it points elsewhere, on the Linux side
+and in the WSL Windows profile, with no setting needed. The same directory
+reached two ways is read once. Search results say which profile a hit came
+from: a `profile` field in `--json` output (`claude`, `claude-org`, ...), and
+a tag such as `claude-code[claude-org]/user` in text output for any profile
+other than the default. The profile is read from the stored file path, so
+chunks indexed before this change carry it too.
 
 ## What it costs
 
@@ -933,7 +944,7 @@ is no daemon, no server, and no separate process to keep alive.
 | `AGENT_HISTORY_MODEL` | `nomic-embed-text` | Ollama embedding model |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama endpoint |
 | `AGENT_HISTORY_ALLOW_REMOTE` | – | Set to `1` to permit a non-loopback `OLLAMA_URL` |
-| `AGENT_HISTORY_PROJECTS` | `~/.claude/projects` | Claude Code transcript root |
+| `AGENT_HISTORY_PROJECTS` | every `~/.claude*/projects` + `$CLAUDE_CONFIG_DIR/projects` | Claude Code transcript root; when set, replaces profile discovery on this side (the WSL Windows side is still scanned) |
 | `AGENT_HISTORY_CODEX` | `~/.codex/sessions` | Codex rollout root |
 | `AGENT_HISTORY_OPENCODE_DB` | `~/.local/share/opencode/opencode.db` | OpenCode database |
 | `AGENT_HISTORY_HERMES_DIRS` | `~/.hermes*` | Hermes profile homes, os.pathsep-separated |
@@ -996,7 +1007,8 @@ Install and sync with the PowerShell equivalents:
 ### WSL
 
 When running inside WSL, transcripts written by Claude Code or Codex on the
-Windows host are picked up automatically, so one index covers both sides. WSL
+Windows host are picked up automatically, so one index covers both sides
+(for Claude Code, every `.claude*/projects` profile in that Windows account). WSL
 cannot tell which Windows account is yours, so a profile is selected only
 when exactly one under `/mnt/c/Users` has that agent's transcripts; if
 several do, none is chosen and you are told to name one via

@@ -212,7 +212,8 @@ def run(reindex: bool = False, force: bool = False) -> int:
                   "existing directory.", file=sys.stderr)
             return 1
         print("No agent transcripts found on this machine.", file=sys.stderr)
-        print("Checked: ~/.claude/projects, ~/.codex/sessions, "
+        print("Checked: every ~/.claude*/projects profile (and "
+              "$CLAUDE_CONFIG_DIR/projects), ~/.codex/sessions, "
               "~/.local/share/opencode, ~/.hermes*/state.db "
               "(override with $AGENT_HISTORY_PROJECTS and friends)",
               file=sys.stderr)
