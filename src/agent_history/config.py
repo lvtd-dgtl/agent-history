@@ -128,6 +128,58 @@ def claude_projects_dir() -> Path:
     return Path.home() / ".claude/projects"
 
 
+# Claude Code config profiles: ~/.claude by default, ~/.claude-<name> for any
+# other account (CLAUDE_CONFIG_DIR=~/.claude-org). Each keeps its own projects/.
+CLAUDE_PROFILE_MARKER = ".claude*/projects"
+
+
+def _claude_profiles_in(home: Path) -> list[Path]:
+    """Every <home>/.claude*/projects directory, ~/.claude first."""
+    try:
+        return sorted(p for p in home.glob(CLAUDE_PROFILE_MARKER) if p.is_dir())
+    except OSError:
+        return []
+
+
+def claude_profile_dirs(_users_dir: Path | None = None) -> list[Path]:
+    """Transcript roots for every Claude Code config profile on this machine.
+
+    That is ~/.claude/projects, ~/.claude-<name>/projects for each other
+    profile, $CLAUDE_CONFIG_DIR/projects when it points elsewhere, and the
+    same .claude*/projects set in the WSL Windows profile. Only existing
+    directories are returned, de-duplicated by resolved path.
+
+    $AGENT_HISTORY_PROJECTS replaces the local discovery (home glob and
+    $CLAUDE_CONFIG_DIR) with the one directory it names; the Windows side is
+    still scanned unless AGENT_HISTORY_NO_WSL is set, as before.
+
+    `_users_dir` is passed through to `wsl_windows_homes` for tests.
+    """
+    if _env("AGENT_HISTORY_PROJECTS"):
+        dirs = [claude_projects_dir()]
+    else:
+        dirs = _claude_profiles_in(Path.home())
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+        if config_dir:
+            dirs.append(Path(config_dir).expanduser() / "projects")
+    for home in wsl_windows_homes(_users_dir, marker=CLAUDE_PROFILE_MARKER):
+        dirs += _claude_profiles_in(home)
+
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        try:
+            key = d.resolve()
+        except OSError:
+            key = d
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
 def strict_path() -> Path:
     """Presence enables strict/compliance mode."""
     return data_home() / "strict.on"
@@ -351,7 +403,8 @@ def wsl_windows_homes(_users_dir: Path | None = None,
 
     `marker` is the per-agent directory that identifies a candidate profile —
     each adapter passes its own, so a profile that only ever ran one agent is
-    still found by that agent's adapter.
+    still found by that agent's adapter. It may be a glob (".claude*/projects"),
+    so a profile that only has a second Claude account still counts.
 
     Returns an empty list on native Linux and macOS, where /mnt/c is absent.
 
@@ -370,7 +423,7 @@ def wsl_windows_homes(_users_dir: Path | None = None,
             if p.is_dir()
             and p.name not in _WSL_SKIP
             and not p.name.startswith("TEMP")
-            and (p / marker).is_dir()
+            and _has_marker(p, marker)
         ]
     except OSError:
         return []
@@ -386,3 +439,9 @@ def wsl_windows_homes(_users_dir: Path | None = None,
             file=sys.stderr,
         )
     return []
+
+
+def _has_marker(home: Path, marker: str) -> bool:
+    if any(ch in marker for ch in "*?["):
+        return any(p.is_dir() for p in home.glob(marker))
+    return (home / marker).is_dir()
