@@ -239,3 +239,18 @@ def test_remote_settings_are_read_from_env(monkeypatch):
     monkeypatch.setenv("AGENT_HISTORY_REMOTE", "ssh://u@h")
     monkeypatch.setenv("AGENT_HISTORY_REMOTE_KEY", "/k")
     assert config.remote_url() == "ssh://u@h" and config.remote_key() == "/k"
+
+
+def test_hub_hits_are_tagged_with_their_claude_profile(ssh, local_index, capsys):
+    """A hub that predates profile tracking sends no `profile`; it is read
+    from the shipped origin, which is the original transcript path."""
+    org = {**hub_hit("hub deploy pipeline notes from the org account"),
+           "agent": "claude-code", "machine": "fleet",
+           "file": "/home/a/.claude-org/projects/-w/s.jsonl"}
+    ssh.answer = Done(json.dumps([org]))
+    search.run("deploy pipeline", mode="text", k=5, as_json=True)
+    got = {r["text"]: r.get("profile") for r in json.loads(capsys.readouterr().out)}
+    assert got["hub deploy pipeline notes from the org account"] == "claude-org"
+
+    search.run("deploy pipeline", mode="text", k=5)
+    assert "claude-code[claude-org]/assistant" in capsys.readouterr().out

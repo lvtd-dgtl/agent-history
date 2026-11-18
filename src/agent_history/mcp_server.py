@@ -238,6 +238,9 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             "timestamp": row.get("timestamp") or "",
             "agent": row.get("agent") or "",
             "machine": row.get("machine") or "",
+            # Which Claude Code config profile (account), e.g. "claude-org";
+            # a name read from the origin, never the path itself.
+            "profile": row.get("profile") or "",
             "project": row.get("cwd") or "",
             "session": _session_of(row),
             "session_id": row.get("session_id") or "",
