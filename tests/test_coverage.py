@@ -133,3 +133,49 @@ def test_cli_text_report_names_the_problem(isolated_env, capsys):
     out = capsys.readouterr().out
     assert "EMPTY" in out and SESSION in out
     assert "not indexed by any adapter" in out
+
+
+def test_missing_index_fails_even_with_no_sources(isolated_env, capsys):
+    (isolated_env / "projects").rmdir()  # no source of any kind either
+    assert cli.main(["doctor", "--coverage", "--json"]) == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["index_present"] is False and report["surfaces"] == []
+
+
+@needs_vec
+def test_another_machines_chunks_do_not_cover_a_local_source(
+        transcripts, fake_embed):
+    path = transcripts("-work", SESSION, [msg("user", TEXT)])
+    assert index.run() == 0
+    db, _ = store.open_for_write()
+    db.execute("UPDATE chunks SET machine = 'elsewhere'")
+    db.commit()
+    db.close()
+    (surface,) = coverage.collect()["surfaces"]
+    assert surface["on_disk"] == 1 and surface["indexed"] == 0
+    assert surface["warning"] == "nothing indexed"
+
+
+@needs_vec
+def test_indexed_sources_are_reported_when_their_root_vanishes(
+        isolated_env, transcripts, fake_embed):
+    path = transcripts("-work", SESSION, [msg("user", TEXT)])
+    assert index.run() == 0
+    path.unlink()
+    path.parent.rmdir()
+    (isolated_env / "projects").rmdir()
+    report = coverage.collect()
+    assert "claude-code" in report["not_detected"]
+    (surface,) = [s for s in report["surfaces"] if s["agent"] == "claude-code"]
+    assert surface["gone_from_disk"] == 1 and surface["on_disk"] == 0
+
+
+def test_openclaw_workspace_markdown_counts_as_on_disk(isolated_env):
+    root = isolated_env / "openclaw"
+    (root / "workspace" / "memory").mkdir(parents=True)
+    (root / "workspace" / "AGENTS.md").write_text("# notes\n" * 50)
+    (root / "workspace" / "memory" / "2026-01-01.md").write_text("a day\n" * 50)
+    report = coverage.collect()
+    (surface,) = [s for s in report["surfaces"] if s["agent"] == "openclaw"]
+    assert surface["on_disk"] == 2
+    assert not [s for s in report["suspects"] if s["agent"] == "openclaw"]

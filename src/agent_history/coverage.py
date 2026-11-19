@@ -67,23 +67,32 @@ def _open_ro(path: Path) -> sqlite3.Connection:
 
 
 def _indexed_origins(path: Path) -> dict[str, dict] | None:
-    """Per-origin chunk count, newest timestamp, and session count.
+    """Per-origin chunk count, newest timestamp, session count and agent.
 
-    None when there is no index to read.
+    Only this machine's chunks count (NULL ``machine`` is local too): a hub
+    or merged index can hold another machine's chunks under the same origin
+    string, which would make a local source look covered. None when there is
+    no index to read.
     """
     if not path.is_file():
         return None
     db = _open_ro(path)
     try:
+        columns = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
+        where, params = "", ()
+        if "machine" in columns:
+            where, params = ("WHERE machine IS NULL OR machine = ? ",
+                             (config.machine_id(),))
         rows = db.execute(
-            "SELECT origin, count(*), max(timestamp), count(DISTINCT session_id) "
-            "FROM chunks GROUP BY origin"
+            "SELECT origin, count(*), max(timestamp), count(DISTINCT session_id), "
+            f"max(agent) FROM chunks {where}GROUP BY origin", params
         ).fetchall()
     finally:
         db.close()
     return {
-        origin: {"chunks": chunks, "newest": _epoch(newest), "sessions": sessions}
-        for origin, chunks, newest, sessions in rows
+        origin: {"chunks": chunks, "newest": _epoch(newest), "sessions": sessions,
+                 "agent": agent}
+        for origin, chunks, newest, sessions, agent in rows
         if origin
     }
 
@@ -350,6 +359,41 @@ def _suspects(per_agent_files: dict[str, list[Path]],
     return found
 
 
+def _extra_files(adapter) -> list[Path]:
+    """Indexed files that are not transcripts, counted in the surface but
+    never judged as suspects: OpenClaw's workspace Markdown."""
+    markdown = getattr(adapter, "_workspace_markdown", None)
+    if not callable(markdown):
+        return []
+    return [p for root in adapter.roots() for p in markdown(root)]
+
+
+def _vanished_surface(adapter, origins: dict) -> list[dict]:
+    """Indexed sources of an adapter whose roots are all gone from disk.
+
+    The index then holds the only copy, so say so instead of listing the
+    adapter only as "not detected". Database-backed adapters store synthetic
+    origins that are not files, so only file-backed adapters are checked.
+    """
+    if _source_files(adapter) is None:
+        return []
+    gone = [info for origin, info in origins.items()
+            if info.get("agent") == adapter.name and not Path(origin).exists()]
+    if not gone:
+        return []
+    return [{
+        "agent": adapter.name,
+        "root": "(no source directory on disk)",
+        "kind": "files",
+        "on_disk": 0,
+        "indexed": 0,
+        "gone_from_disk": len(gone),
+        "newest_source": None,
+        "newest_indexed": max(
+            (i["newest"] for i in gone if i["newest"] is not None), default=None),
+    }]
+
+
 # -------------------------------------------------------------------- report
 
 def collect(lag_hours: float = LAG_WARN_HOURS) -> dict:
@@ -366,12 +410,14 @@ def collect(lag_hours: float = LAG_WARN_HOURS) -> dict:
     for adapter in adapters.all_adapters():
         if not adapter.available():
             not_detected.append(adapter.name)
+            surfaces += _vanished_surface(adapter, origins)
             continue
         files = _source_files(adapter)
         if files is None:
             surfaces += _db_surfaces(adapter, origins)
         else:
-            surfaces += _file_surfaces(adapter, files, origins)
+            surfaces += _file_surfaces(adapter, files + _extra_files(adapter),
+                                       origins)
             if adapter.name in _TRANSCRIPT_AGENTS:
                 transcript_files[adapter.name] = files
         if adapter.name == "claude-code":
@@ -395,7 +441,8 @@ def collect(lag_hours: float = LAG_WARN_HOURS) -> dict:
 
 
 def _has_problems(report: dict) -> bool:
-    return (any(s["warning"] for s in report["surfaces"])
+    return (not report["index_present"]
+            or any(s["warning"] for s in report["surfaces"])
             or any(s["problem"] != "short" for s in report["suspects"]))
 
 
