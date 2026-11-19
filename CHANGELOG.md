@@ -11,6 +11,22 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+## [0.18.1] — 2026-11-19
+
+### Fixed
+- **Secrets that straddle a chunk boundary are now redacted by `scrub` and
+  `ship --backfill-from-index`** (#35).
+  Stored chunks are rejoined into whole records (same origin, session,
+  timestamp, role, machine and subagent; consecutive ids and an exact 200-char overlap,
+  or the provenance columns where present), redacted whole, then cut back into
+  their windows. Secrets longer than the overlap that straddle a chunk
+  boundary (JWTs, PEM keys, long bearer tokens) are no longer missed.
+  Backfill now ships the stitched record, so the hub dedups it against the
+  same message shipped from an on-disk transcript. Chunks that cannot be
+  stitched fall back to per-chunk redaction plus a safety net: a 40+ char
+  base64 run touching a chunk edge becomes `[REDACTED:fragment]`.
+  Backfilled records keep their subagent labels and fork links.
+
 ## [0.18.0] — 2026-11-18
 
 The release line, with near-real-time sync merged in. Builds that reported
