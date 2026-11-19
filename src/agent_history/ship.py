@@ -60,6 +60,19 @@ def record_hash(agent: str, origin: str, session_id: str, timestamp: str,
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
+def portable_hash(agent: str, origin: str, session_id: str, timestamp: str,
+                  role: str, text: str) -> str:
+    """The identity a record is deduplicated under.
+
+    A conversation is identified by its session id, not by the file it sits
+    in, so moving or copying a transcript between project directories does
+    not make its records "new". Pseudo-sessions (memory and doc files, whose
+    ids name a file) keep the origin in the hash, as they must.
+    """
+    key_origin = origin if sessions.is_pseudo(session_id) else ""
+    return record_hash(agent, key_origin, session_id, timestamp, role, text)
+
+
 # ---------------------------------------------------------------------- state
 
 _SCHEMA = """
@@ -67,6 +80,11 @@ CREATE TABLE IF NOT EXISTS shipped (hash TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS queued  (hash TEXT PRIMARY KEY, batch TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_queued_batch ON queued(batch);
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
+-- Read position per transcript for `sync`: an optimisation only. Correctness
+-- never depends on it, because every record is still deduplicated by hash.
+CREATE TABLE IF NOT EXISTS files (
+    path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+    offset INTEGER NOT NULL, bridges TEXT NOT NULL DEFAULT '{}');
 """
 
 
@@ -133,6 +151,28 @@ class State:
         self.db.commit()
         return settled
 
+    def get_file(self, path: str) -> tuple[int, int, int, dict] | None:
+        """(size, mtime_ns, offset, bridges) last recorded for ``path``."""
+        row = self.db.execute(
+            "SELECT size, mtime_ns, offset, bridges FROM files WHERE path = ?",
+            (path,)).fetchone()
+        if row is None:
+            return None
+        try:
+            bridges = json.loads(row[3])
+        except ValueError:
+            bridges = {}
+        return row[0], row[1], row[2], bridges if isinstance(bridges, dict) else {}
+
+    def set_file(self, path: str, size: int, mtime_ns: int, offset: int,
+                 bridges: dict) -> None:
+        self.db.execute(
+            "INSERT INTO files(path, size, mtime_ns, offset, bridges) "
+            "VALUES (?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET "
+            "size=excluded.size, mtime_ns=excluded.mtime_ns, "
+            "offset=excluded.offset, bridges=excluded.bridges",
+            (path, size, mtime_ns, offset, json.dumps(bridges)))
+
     def get(self, key: str, default: str = "0") -> str:
         row = self.db.execute(
             "SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -190,8 +230,14 @@ class Batches:
         and its string values are redacted like the text."""
         # Unconditional: this is the one place text leaves the machine.
         text, found = redact.redact(text)
-        digest = record_hash(agent, origin, session_id, timestamp, role, text)
+        digest = portable_hash(agent, origin, session_id, timestamp, role, text)
         if digest in self.seen or self.state.known(digest):
+            return digest
+        # Records shipped before the hash stopped including the file path are
+        # recorded under the old value: honour them so upgrading re-sends
+        # nothing.
+        legacy = record_hash(agent, origin, session_id, timestamp, role, text)
+        if legacy != digest and self.state.known(legacy):
             return digest
         self.seen.add(digest)
         self.new += 1
@@ -270,6 +316,52 @@ def _redact_values(value, counter: Counter):
     return value
 
 
+def migrate_portable(state: State) -> int:
+    """One-time upgrade of ``ship.db``: alias every record already shipped (or
+    queued) under its path-independent hash.
+
+    Before this, the hash included the transcript's path, and the old path
+    cannot be recovered once a file has moved. So while the files still sit
+    where they were shipped from, each record's old hash is looked up and its
+    portable hash recorded beside it. Records not found are simply new.
+    Idempotent; the flag is set only when the pass completes. Run it before
+    moving transcripts (`ship --migrate-keys`); skipping it costs a re-upload
+    of the moved sessions, which the hub then deduplicates by content.
+    """
+    if state.get("portable_migrated", "") == "1":
+        return 0
+    added = 0
+    for adapter in adapters.available_adapters():
+        if adapter.name == "inbox":
+            continue
+        for record in adapter.records():
+            if textproc.is_injection(record.text):
+                continue
+            text, _found = redact.redact(record.text)
+            args = (record.agent, record.origin, record.session_id,
+                    record.timestamp, record.role, text)
+            legacy, portable = record_hash(*args), portable_hash(*args)
+            if legacy == portable:
+                continue
+            row = state.db.execute(
+                "SELECT 1 FROM shipped WHERE hash = ?", (legacy,)).fetchone()
+            if row:
+                cur = state.db.execute(
+                    "INSERT OR IGNORE INTO shipped(hash) VALUES (?)", (portable,))
+            else:
+                batch = state.db.execute(
+                    "SELECT batch FROM queued WHERE hash = ?", (legacy,)).fetchone()
+                if not batch:
+                    continue
+                cur = state.db.execute(
+                    "INSERT OR IGNORE INTO queued(hash, batch) VALUES (?, ?)",
+                    (portable, batch[0]))
+            added += cur.rowcount
+    state.db.commit()
+    state.set("portable_migrated", "1")
+    return added
+
+
 def _outbox() -> Path:
     path = config.outbox_dir()
     path.mkdir(parents=True, exist_ok=True)
@@ -314,11 +406,12 @@ def upload(files: list[Path], dest: str, key: str | None) -> bool:
 
 # ------------------------------------------------------------------------- run
 
-def run(dry_run: bool = False, backfill: bool = False) -> int:
+def run(dry_run: bool = False, backfill: bool = False,
+        migrate_only: bool = False) -> int:
     from . import trigger
 
     dest = config.hub_ingest()
-    if not dest and not dry_run:
+    if not dest and not dry_run and not migrate_only:
         print("ship: AGENT_HISTORY_HUB_INGEST is not set (an rsync "
               "destination such as ahub@host:)", file=sys.stderr)
         return 1
@@ -330,6 +423,14 @@ def run(dry_run: bool = False, backfill: bool = False) -> int:
             print("ship: another run is in progress; skipping")
             return 0
         config.secure_file(config.ship_lock_path())
+        if migrate_only:
+            state = State.open(writable=True)
+            try:
+                print(f"ship: aliased {migrate_portable(state)} record(s) "
+                      "under path-independent keys")
+            finally:
+                state.close()
+            return 0
         return _run_locked(dest, False, backfill)
 
 
@@ -344,6 +445,7 @@ def _run_locked(dest: str | None, dry_run: bool, backfill: bool) -> int:
             # A previous run may have delivered files and died before it
             # could record that.
             state.settle(outbox)
+            migrate_portable(state)
 
         batches = Batches(state, outbox, dry_run)
         _collect(batches)
@@ -368,22 +470,37 @@ def _run_locked(dest: str | None, dry_run: bool, backfill: bool) -> int:
         if not leftovers:
             return 0
 
-        try:
-            ok = upload(leftovers, dest, config.hub_key())
-        except Exception as exc:  # noqa: BLE001 - a transport must not lose state
-            print(f"ship: upload failed: {exc}", file=sys.stderr)
-            ok = False
-        if ok:
-            for batch in leftovers:  # delivered, whether or not the transport removed them
-                batch.unlink(missing_ok=True)
-        done = state.settle(outbox)
-        remaining = len(list(outbox.glob("*.jsonl")))
+        ok, done, remaining = deliver(state, outbox, dest, leftovers)
         print(f"ship: uploaded {done} batch(es)"
               + (f"; {remaining} left in the outbox for the next run"
                  if remaining else ""))
         return 0 if ok and not remaining else 1
     finally:
         state.close()
+
+
+def deliver(state: State, outbox: Path, dest: str | None,
+            leftovers: list[Path] | None = None) -> tuple[bool, int, int]:
+    """Upload every batch waiting in the outbox and settle what arrived.
+
+    Returns ``(ok, batches settled, batches still waiting)``. A failed upload
+    leaves the batches in place; the next run sends them.
+    """
+    if leftovers is None:
+        leftovers = sorted(outbox.glob("*.jsonl"))
+    ok = True
+    if leftovers:
+        try:
+            ok = bool(dest) and upload(leftovers, dest, config.hub_key())
+        except Exception as exc:  # noqa: BLE001 - a transport must not lose state
+            print(f"ship: upload failed: {exc}", file=sys.stderr)
+            ok = False
+        if ok:
+            for batch in leftovers:  # delivered, whether or not the transport removed them
+                batch.unlink(missing_ok=True)
+    done = state.settle(outbox)
+    remaining = len(list(outbox.glob("*.jsonl")))
+    return ok, done, remaining
 
 
 def _collect(batches: Batches) -> None:

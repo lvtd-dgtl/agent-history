@@ -120,6 +120,28 @@ they have no corresponding tags.
 - `redact` catches bare 1Password service-account tokens (`ops_…`) and Scribe
   agent keys (`scrb_agt_…`) with no `NAME=` in front. The hub's index unit indexes
   `inbox/<machine>/notes/` into the notes store.
+- **Near-real-time sync.** `agent-history-notify` (a hook for Stop,
+  SubagentStop, PreCompact, SessionEnd) spools the changed transcript and
+  starts a detached `agent-history sync`: single-flight, debounced (first
+  change runs at once, a burst collapses into one trailing pass per
+  `AGENT_HISTORY_SYNC_INTERVAL`, default 15s), incremental (reads only the
+  bytes appended since the offset kept in `ship.db`), indexing and shipping
+  just those records. `sync --sweep --once` is the cron safety net. The
+  detached syncer reads `~/.config/agent-history/env` for the hub settings.
+- `ship --migrate-keys`: aliases already-shipped records under their new
+  path-independent keys. Run it once before moving transcripts.
+
+### Changed
+- Shipped-record identity no longer includes the transcript's file path
+  (except for memory/doc pseudo-sessions), so moving a session between
+  project directories re-sends nothing. Records shipped by 0.17.0 are
+  recognised through a one-time alias migration (automatic on the next
+  `ship`/`sync`).
+- `ship-jobs` and `boat-export` compute record digests with the same
+  path-independent hash, so their shipped-check matches what `ship` records.
+
+### Fixed
+- `import --dry-run` crashed on an undefined `chunk_text`.
 
 ## [0.17.0] — 2026-10-15
 

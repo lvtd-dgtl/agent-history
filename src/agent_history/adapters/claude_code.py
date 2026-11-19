@@ -64,7 +64,7 @@ class ClaudeCodeAdapter:
         files = self._transcript_files()
         # Sessions whose transcript this scan covers: only their copies can
         # be dropped from a fork, since only then is the text kept elsewhere.
-        known = _KnownParents(files)
+        known = self._parents = _KnownParents(files)
         for path in files:
             yield from self._read_transcript(path, known)
         for path in self._memory_files():
@@ -101,6 +101,18 @@ class ClaudeCodeAdapter:
                     out[sid] = bridge
         return out
 
+    def transcript_files(self) -> list[Path]:
+        return self._transcript_files()
+
+    def memory_files(self) -> list[Path]:
+        return self._memory_files()
+
+    def session_bridges(self) -> dict[str, str]:
+        return self._session_bridges()
+
+    def read_memory(self, path: Path) -> Iterator[Record]:
+        return self._read_memory(path)
+
     def _memory_files(self) -> list[Path]:
         files: list[Path] = []
         for root in self.roots():
@@ -111,38 +123,63 @@ class ClaudeCodeAdapter:
 
     def _read_transcript(self, path: Path, known=frozenset(),
                          drop_copies: bool = False) -> Iterator[Record]:
-        # ``known`` holds the sessions whose own file yields entries, so a
-        # fork's copies of them are dropped; ``drop_copies`` drops every
-        # copied line (a job never ships another session's history).
-        # Records are held until the file is read: the bridge-session line
-        # can come after messages that belong to the same session.
+        records, _end, _state = self.read_tail(
+            path, 0, parents=known, drop_copies=drop_copies)
+        yield from records
+
+    def read_tail(self, path: Path, offset: int = 0,
+                  bridges: dict | None = None, *, parents=None,
+                  drop_copies: bool = False,
+                  ) -> tuple[list[Record], int, dict]:
+        """Records from ``path`` starting at byte ``offset``.
+
+        Returns ``(records, end_offset, state)``. ``end_offset`` is the byte
+        after the last line consumed: a trailing line that is still being
+        written (no newline yet, not valid JSON) is left for the next call, so
+        a tail read never loses or splits a record. ``state`` is passed back
+        in on the next call (sync keeps it in ``ship.db``): the sessionId ->
+        remote-control id map, since the ``bridge-session`` line can sit in a
+        different read than the messages it labels, plus, under ``_FORK``,
+        what the head of the file said about forks, which a later tail read
+        no longer sees.
+
+        ``parents`` holds the sessions whose own file yields entries, so a
+        fork's copies of them are dropped (built from this adapter's files
+        when not given); ``drop_copies`` drops every copied line (a job never
+        ships another session's history).
+        """
         out: list[Record] = []
-        bridges = dict(getattr(self, "_bridges", {}))
+        state = dict(getattr(self, "_bridges", {}))
+        state.update(bridges or {})
+        fork = dict(state.get(_FORK) or {}) if offset else {}
+        if parents is None:
+            parents = self._known_parents()
         try:
-            handle = path.open(encoding="utf-8", errors="replace")
+            handle = path.open("rb")
         except OSError:
-            return
+            return [], offset, state
         # <proj>/<session>/subagents/agent-<id>.jsonl
         in_subagents = path.parent.name == "subagents"
         file_agent_id = clean_agent_id(
             path.stem[len("agent-"):]
             if in_subagents and path.stem.startswith("agent-") else None)
-        fork_parent: str | None = None
-        brief_parent: str | None = None
-        first_user_seen = False
-        with handle as lines:
-            for line in lines:
-                try:
-                    entry = json.loads(line)
-                except ValueError:
-                    continue
-                if not isinstance(entry, dict) or entry.get("isMeta"):
+        end = offset
+        with handle:
+            handle.seek(offset)
+            for raw in handle:
+                complete = raw.endswith(b"\n")
+                entry = _parse_line(raw)
+                if entry is _BAD and not complete:
+                    break  # half-written last line: retry from here next time
+                end += len(raw)
+                if entry is _BAD or not isinstance(entry, dict) \
+                        or entry.get("isMeta"):
                     continue
                 role = entry.get("type")
                 if role == "bridge-session":
                     bridge = entry.get("bridgeSessionId")
                     if entry.get("sessionId") and _bridge_kind(bridge):
-                        bridges[entry["sessionId"]] = bridge
+                        state[entry["sessionId"]] = bridge
                     continue
                 if role not in ("user", "assistant"):
                     continue
@@ -156,18 +193,18 @@ class ClaudeCodeAdapter:
                 if parent:
                     # The last copied line is the fork point, so a fork of a
                     # fork names its direct parent.
-                    fork_parent = parent
-                    if parent in known:
+                    fork["parent"] = parent
+                    if parent in parents:
                         # Copied from a parent indexed from its own file:
                         # those lines belong to the parent, not to this one.
                         continue
                 sidechain = bool(entry.get("isSidechain")) or in_subagents
-                if role == "user" and not sidechain and not first_user_seen:
+                if role == "user" and not sidechain and not fork.get("first_user"):
                     # Only the first user turn of the main thread may name a
                     # parent (see _brief_parent); a later one never does.
-                    first_user_seen = True
+                    fork["first_user"] = True
                     first = next(_texts(entry.get("message") or {}), "")
-                    brief_parent = _brief_parent(first)
+                    fork["brief"] = _brief_parent(first)
                 raw_id = entry.get("agentId")
                 # The file name stands in only when the line has no id; a
                 # present but malformed id is dropped, not replaced.
@@ -182,6 +219,8 @@ class ClaudeCodeAdapter:
                         continue
                     if text.startswith(SKIP_PREFIXES):
                         continue
+                    if not fork.get("session"):
+                        fork["session"] = entry.get("sessionId") or path.stem
                     out.append(Record(
                         agent=AGENT,
                         origin=str(path),
@@ -194,19 +233,34 @@ class ClaudeCodeAdapter:
                         agent_type=agent_type,
                         sidechain=sidechain,
                     ))
-        fork_of = fork_parent
-        if not fork_of and brief_parent and out:
+        fork_of = fork.get("parent")
+        brief = fork.get("brief")
+        if not fork_of and brief and fork.get("session"):
             # A real fork wins; a self-reference is not a link.
-            if brief_parent != (out[0].session_id or path.stem):
-                fork_of = brief_parent
+            if brief != fork["session"]:
+                fork_of = brief
+        # Records are held until the read ends: the bridge-session line can
+        # come after messages that belong to the same session.
+        final: list[Record] = []
         for record in out:
             if fork_of:
                 record = dataclasses.replace(record, fork_of=fork_of)
-            bridge = bridges.get(record.session_id)
+            bridge = state.get(record.session_id)
             if bridge:
                 record = dataclasses.replace(
                     record, aliases=((_bridge_kind(bridge), bridge),))
-            yield record
+            final.append(record)
+        if fork:
+            state[_FORK] = fork
+        return final, end, state
+
+    def _known_parents(self) -> "_KnownParents":
+        """Parents for a tail read that was not given any: built once per
+        adapter from its transcript files, as a full scan would."""
+        cached = getattr(self, "_parents", None)
+        if cached is None:
+            cached = self._parents = _KnownParents(self._transcript_files())
+        return cached
 
     def _read_memory(self, path: Path) -> Iterator[Record]:
         try:
@@ -225,6 +279,21 @@ class ClaudeCodeAdapter:
             role="memory",
             text=scrub(text),
         )
+
+
+# Key of the fork state inside read_tail's state dict. Session ids are UUIDs
+# (or file stems), so it never collides with a sessionId -> bridge entry.
+_FORK = "_fork"
+
+_BAD = object()
+
+
+def _parse_line(raw: bytes) -> object:
+    """One transcript line as JSON, or ``_BAD`` when it is not valid."""
+    try:
+        return json.loads(raw.decode("utf-8", errors="replace"))
+    except ValueError:
+        return _BAD
 
 
 def _bridge_kind(bridge_id: object) -> str | None:

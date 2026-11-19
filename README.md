@@ -471,6 +471,26 @@ waking Ollama when there is nothing to do, so idle hours cost nothing. For
 docs trees it consults the adapter's own pruned file set, so a touched
 `node_modules` readme or an oversized log can never wake the indexer.
 
+### Near-real-time (hooks + `sync`)
+
+Add `agent-history-notify` as a `Stop` and `SubagentStop` hook (the plugin's
+`hooks.json` does). It returns in ~50 ms; a detached `agent-history sync`
+then indexes and ships only the appended turns, usually within a second, at
+most one pass per 15 s (`AGENT_HISTORY_SYNC_INTERVAL`) with a trailing pass so
+the last turn is never skipped. Syncers never overlap (`.sync.lock`; index and
+ship keep their own locks), the hub being down just leaves batches in the
+outbox, and redaction still happens before anything is written to it. Keep a
+cron safety net for sessions killed without a hook:
+
+```cron
+*/5 * * * * (set -a; . $HOME/.config/agent-history/env; set +a; agent-history sync --sweep --once) >> $HOME/.local/share/agent-history/sync.log 2>&1
+```
+
+Shipped records are keyed by session id + timestamp + role + text, not by file
+path, so moving a transcript between `~/.claude/projects/<dir>/` folders
+re-sends and re-indexes nothing. After upgrading, run
+`agent-history ship --migrate-keys` once *before* moving files.
+
 ## Hub (central history)
 
 One index on a server that every machine feeds and every session can search —

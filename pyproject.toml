@@ -24,6 +24,7 @@ Issues = "https://github.com/d3layd/agent-history/issues"
 
 [project.scripts]
 agent-history = "agent_history.cli:main"
+agent-history-notify = "agent_history.notify:main"
 
 [project.optional-dependencies]
 mcp = [
