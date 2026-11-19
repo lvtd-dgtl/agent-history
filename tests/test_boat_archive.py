@@ -166,7 +166,7 @@ def test_a_stopped_vm_named_for_the_job_and_never_copied_is_an_urgent_alert(env)
     assert warnings == []
     (a,) = alerts
     assert a["job"] == JOB and a["vm"] == VM and a["urgent"] is True
-    assert a["repo"] == "lvtd-dgtl/storm-check" and a["branch"] == f"job/{JOB}"
+    assert a["repo"] == "example-org/example-repo" and a["branch"] == f"job/{JOB}"
     assert "about 2 more day(s), until 2026-11-22" in a["text"]
     assert f"Run: agent-history boat-archive --job {JOB} {VM}" in a["text"]
     text = boat_archive.format_alerts(alerts)

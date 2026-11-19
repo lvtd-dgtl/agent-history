@@ -23,7 +23,7 @@ Nothing here ever deletes a VM; the Boat wrapper has no delete call.
 ``AGENT_HISTORY_JOBS_DIR`` it finds the job's VMs and prints one alert line
 per VM that is **stopped (or gone) with transcripts not confirmed copied**,
 with how long Boat keeps its data. Empty output means nothing to report, so
-a cron that posts the output verbatim (Clamps' Hermes ``deliver=telegram``
+a cron that posts the output verbatim (OpsBot's Hermes ``deliver=telegram``
 jobs, like ``claude-job notify --drain``) stays silent on good days.
 
 Which VMs belong to a job, in this order (union):

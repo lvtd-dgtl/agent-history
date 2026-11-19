@@ -123,11 +123,11 @@ copies back if needed, and only once arrived and indexed stops the VM and
 records `ARCHIVED.json` (4 = arrived, awaiting index confirmation; it never
 deletes). Start job VMs named for the job: `boat new --name "$JOB <purpose>"`.
 
-### Daily sweep (needs Dennis's OK to install)
+### Daily sweep (needs the owner's OK to install)
 
 A daily cron, as the user that holds the Boat login and can read the job
 folders (claude-jobs), posting its output verbatim to Telegram through
-Clamps' Hermes (`no_agent=true`, `deliver=telegram`, like `claude-job notify
+OpsBot's Hermes (`no_agent=true`, `deliver=telegram`, like `claude-job notify
 --drain`):
 
 ```bash
