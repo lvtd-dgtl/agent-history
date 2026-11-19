@@ -114,6 +114,55 @@ def ship_lock_path() -> Path:
     return data_home() / ".ship.lock"
 
 
+def sync_lock_path() -> Path:
+    return data_home() / ".sync.lock"
+
+
+def sync_stamp_path() -> Path:
+    """Its mtime is when the last `sync` pass started (the debounce clock)."""
+    return data_home() / ".last-sync"
+
+
+def dirty_dir() -> Path:
+    """Spool of transcripts a hook reported as changed, one file each."""
+    return data_home() / "dirty"
+
+
+def sync_log_path() -> Path:
+    return data_home() / "sync.log"
+
+
+def env_file() -> Path:
+    """Where the shipper's settings live (the same file the cron/systemd
+    units read): $AGENT_HISTORY_ENV_FILE or ~/.config/agent-history/env."""
+    explicit = os.environ.get("AGENT_HISTORY_ENV_FILE")
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path.home() / ".config" / APP_NAME / "env"
+
+
+def load_env_file() -> None:
+    """Fill unset variables from the env file. A Claude Code hook starts with
+    the editor's environment, not the shell's, so the detached syncer needs
+    this to find the hub. Never overrides what is already set; never raises."""
+    try:
+        text = env_file().read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:]
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if key.startswith("AGENT_HISTORY_") or key == "OLLAMA_URL":
+            os.environ.setdefault(key, value)
+
+
 def ship_state_path() -> Path:
     """What `ship` has already sent (hashes, backfill watermark)."""
     return data_home() / "ship.db"

@@ -392,8 +392,8 @@ def vm_copy_digest(job: Job, vm_id: str, files: list[Path]) -> str:
 def record_digest(record: Record) -> str:
     """The hash `ship` gives this record (it hashes the redacted text)."""
     text, _ = redact.redact(record.text)
-    return ship.record_hash(record.agent, record.origin, record.session_id,
-                            record.timestamp, record.role, text)
+    return ship.portable_hash(record.agent, record.origin, record.session_id,
+                              record.timestamp, record.role, text)
 
 
 def header_object(job: Job, **more: str) -> dict:

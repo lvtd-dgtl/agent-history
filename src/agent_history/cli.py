@@ -7,13 +7,13 @@ import json
 import sys
 
 from . import (__version__, adapters, config, embed, index, inject, scrub,
-               search, ship, show, store, trigger, viewer)
+               search, ship, show, store, sync, trigger, viewer)
 
 COMMANDS = {"index", "reindex", "reembed", "search", "sources", "doctor",
             "datadir", "trigger", "show", "serve", "inject", "docs",
             "purge", "strict", "scrub", "relabel", "ship", "ship-jobs", "confirm-indexed",
             "boat-export",
-            "serve-ssh", "mcp", "import", "notes"}
+            "serve-ssh", "mcp", "import", "notes", "sync", "notify"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -83,11 +83,24 @@ def _build_parser() -> argparse.ArgumentParser:
     trig.add_argument("--foreground", action="store_true",
                       help="wait for indexing instead of detaching")
 
+    syn = sub.add_parser(
+        "sync", help="index + ship only the transcripts that changed "
+                     "(started by `agent-history-notify`; cron: --sweep --once)")
+    syn.add_argument("--sweep", action="store_true",
+                     help="also stat every transcript and process changed ones")
+    syn.add_argument("--once", action="store_true",
+                     help="one pass, no debounce wait or lingering")
+    sub.add_parser("notify", help="hook entry point: spool the transcript "
+                                  "named on stdin and start `sync`")
+
     shp = sub.add_parser(
         "ship", help="send redacted records to the hub "
                      "(AGENT_HISTORY_HUB_INGEST)")
     shp.add_argument("--dry-run", action="store_true", dest="dry_run",
                      help="report what would be sent; write and upload nothing")
+    shp.add_argument("--migrate-keys", action="store_true", dest="migrate",
+                     help="only alias already-shipped records under "
+                          "path-independent keys (run before moving transcripts)")
     shp.add_argument("--backfill-from-index", action="store_true",
                      dest="backfill",
                      help="also send chunks already in the local index "
@@ -676,6 +689,12 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         if args.command == "trigger":
             return trigger.run(args.label, if_changed=args.if_changed,
                                foreground=args.foreground)
+        if args.command == "sync":
+            config.load_env_file()
+            return sync.run(sweep=args.sweep, once=args.once)
+        if args.command == "notify":
+            from . import notify
+            return notify.main()
         if args.command == "datadir":
             print(config.data_home())
             return 0
@@ -701,7 +720,8 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                             limit=args.limit, as_json=args.as_json,
                             where=args.where, tenant=args.tenant)
         if args.command == "ship":
-            return ship.run(dry_run=args.dry_run, backfill=args.backfill)
+            return ship.run(dry_run=args.dry_run, backfill=args.backfill,
+                            migrate_only=args.migrate)
         if args.command == "ship-jobs":
             from . import jobs
             return jobs.run(args.final, dry_run=args.dry_run, wait=args.wait)

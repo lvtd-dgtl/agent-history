@@ -1,6 +1,6 @@
 [project]
 name = "agent-history"
-version = "0.17.0"
+version = "0.18.0"
 description = "Local semantic search over AI coding agent session transcripts, using Ollama embeddings and sqlite-vec"
 readme = "README.md"
 license = { text = "MIT" }
@@ -24,6 +24,7 @@ Issues = "https://github.com/d3layd/agent-history/issues"
 
 [project.scripts]
 agent-history = "agent_history.cli:main"
+agent-history-notify = "agent_history.notify:main"
 
 [project.optional-dependencies]
 mcp = [
