@@ -11,6 +11,10 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+## [0.19.0] — 2026-11-19
+
+Two read-only commands for checking what the index holds.
+
 ### Added
 - **`agent-history doctor --coverage`** — what is on disk versus what reached
   the index, per source (Claude Code roots incl. the WSL→Windows profile and
@@ -20,8 +24,11 @@ they have no corresponding tags.
   flags suspect transcripts — 0-byte, last line not valid JSON (torn by a
   crash), and near-empty session stubs — showing the remote-control
   `bridgeSessionId` where it can be found so they can be re-fetched, and lists
-  the surfaces no adapter can see. Strictly read-only (`mode=ro`); `--json`
-  for scripts; exits 1 when something needs attention. (#28)
+  the surfaces no adapter can see. Only this machine's chunks count, so a
+  hub's copies never make a local source look covered, and indexed sources
+  whose whole directory is gone are still listed. Strictly read-only
+  (`mode=ro`); `--json` for scripts; exits 1 when something needs attention
+  or there is no index. (#28)
 - **`agent-history sessions`** lists the most recently active sessions,
   newest first — one line each with last-active time (local), agent (tagged
   with a non-default Claude Code profile, `claude-code[claude-org]`, and
