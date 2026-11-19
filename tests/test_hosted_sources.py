@@ -168,7 +168,7 @@ def test_the_longest_allowed_id_is_accepted():
     {"session_id": None},
     {"session_url": None},
     {"session_url": ""},
-    {"machine": "MSI"},
+    {"machine": "pc1"},
     {"job_id": "cj_20261101T120000Z_a1b2c3"},
     {"chat_url": "https://claude.ai/chat/0f6a7c2e-1234-4abc-8def-0123456789ab"},
     {"duet_channel_id": "c1", "duet_message_id": "m1"},
@@ -289,7 +289,7 @@ def test_hosted_link_is_none_without_a_note_or_a_store(fake_embed):
 
 def test_other_kinds_get_no_link_field_and_are_no_hosted_link(fake_embed):
     notes.save(notes.build(title="code note", summary="zebra code",
-                           source=notes.make_source(session_id=SID, machine="MSI")))
+                           source=notes.make_source(session_id=SID, machine="pc1")))
     (hit,) = notes.search("zebra code", mode="text")
     assert "link" not in hit
     assert notes.hosted_link(SID) is None
@@ -299,7 +299,7 @@ def test_old_rows_sit_beside_new_ones(fake_embed):
     """No schema change: every older kind stays readable next to a hosted row."""
     for src in (notes.make_source(chat_url="https://claude.ai/chat/0f6a7c2e-1234-4abc-8def-0123456789ab"),
                 notes.make_source(duet_channel_id="c1", duet_message_id="m1"),
-                notes.make_source(session_id="sess-1", machine="MSI"),
+                notes.make_source(session_id="sess-1", machine="pc1"),
                 source()):
         notes.save(notes.build(title=src["kind"], summary=f"zebra {src['kind']}", source=src))
     kinds = sorted(hit["source"]["kind"] for hit in notes.search("zebra", mode="text"))
@@ -397,7 +397,7 @@ def test_notes_add_takes_a_hosted_source(fake_embed, capsys):
     ["--provider", "not-a-provider", "--session", SID, "--session-url", LINK],
     ["--provider", "claude-ai", "--session", SID, "--session-url", "https://evil.com/code/" + SID],
     ["--provider", "claude-ai", "--session", SID, "--session-url", LINK,
-     "--session-machine", "MSI"],
+     "--session-machine", "pc1"],
     ["--provider", "claude-ai", "--session", SID],
     ["--session-url", LINK, "--session", SID],
 ])

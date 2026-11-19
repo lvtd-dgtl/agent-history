@@ -34,7 +34,7 @@ def call(hub, token, tool, args):  # noqa: F811
     return run_calls(hub["tokens"][token], go)
 
 
-def index_tenant(hub, tenant="dennis"):  # noqa: F811
+def index_tenant(hub, tenant="kim"):  # noqa: F811
     mp = pytest.MonkeyPatch()
     try:
         mp.setenv("AGENT_HISTORY_INBOX", str(hub["inbox"] / tenant))
@@ -45,7 +45,7 @@ def index_tenant(hub, tenant="dennis"):  # noqa: F811
 
 
 def note_files(hub, machine="claude-ai"):  # noqa: F811
-    return sorted((hub["inbox"] / "dennis" / machine / "notes").glob("*.jsonl"))
+    return sorted((hub["inbox"] / "kim" / machine / "notes").glob("*.jsonl"))
 
 
 def recall_only(hub, query="zebra import"):  # noqa: F811
@@ -103,7 +103,7 @@ def test_spoofed_urls_are_refused_at_the_tool_and_write_nothing(hub, url):  # no
 
 def test_the_logic_layer_refuses_an_unknown_provider_without_the_sdk_schema(hub):  # noqa: F811
     """The enum in the schema is one wall; the refusal in notes.py is the other."""
-    identity = Identity(name="dennis-write", scopes=frozenset({"write"}), tenant="dennis",
+    identity = Identity(name="kim-write", scopes=frozenset({"write"}), tenant="kim",
                         machine="claude-ai")
     with pytest.raises(mcp_server.ToolFailure, match="provider must be one of"):
         mcp_server.note(identity, title="t", summary="s", provider="not-a-provider",
@@ -175,7 +175,7 @@ def test_show_before_the_note_is_indexed_is_null_not_an_error(hub):  # noqa: F81
 def test_show_with_no_transcript_index_at_all_still_answers(hub):  # noqa: F811
     call(hub, "write", "history_note", {**NOTE, **HOSTED})
     index_tenant(hub)
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         config.db_path().unlink()
     out = data(call(hub, "read", "history_show", {"session": SID}))
     assert out["link"] == LINK and out["messages"] == []
@@ -184,7 +184,7 @@ def test_show_with_no_transcript_index_at_all_still_answers(hub):  # noqa: F811
 def test_show_keeps_the_transcript_and_adds_the_link_when_both_exist(hub):  # noqa: F811
     from test_mcp import put
 
-    with config.tenant_home("dennis"):
+    with config.tenant_home("kim"):
         db, _ = store.open_for_write()
         put(db, "a transcript that did get indexed for this cloud session", session=SID)
         db.commit()
@@ -202,7 +202,7 @@ def test_show_still_errors_for_an_unknown_id_that_is_not_hosted(hub):  # noqa: F
 
 
 def test_show_on_an_ordinary_transcript_gets_no_link_field(hub):  # noqa: F811
-    out = data(call(hub, "read", "history_show", {"session": "sess-dennis"}))
+    out = data(call(hub, "read", "history_show", {"session": "sess-kim"}))
     assert "link" not in out and "provider" not in out and out["messages"]
 
 
@@ -210,9 +210,9 @@ def test_a_link_stays_inside_its_tenant(hub):  # noqa: F811
     call(hub, "write", "history_note", {**NOTE, **HOSTED})
     index_tenant(hub)
     assert recall_only(hub)["count"] == 1
-    assert data(call(hub, "eagle", "history_recall",
+    assert data(call(hub, "globex", "history_recall",
                      {"query": "zebra import", "mode": "text", "notes": "only"}))["count"] == 0
-    assert data(call(hub, "eagle", "history_show", {"session": SID}))["link"] is None
+    assert data(call(hub, "globex", "history_show", {"session": SID}))["link"] is None
 
 
 # ------------------------------------------------------------------ redaction
@@ -255,7 +255,7 @@ def test_history_record_takes_a_hosted_source(hub):  # noqa: F811
     {"provider": "not-a-provider"},
     {"session_url": f"https://claude.ai.evil.com/code/{SID}"},
     {"session_url": None},
-    {"session_machine": "MSI"},
+    {"session_machine": "pc1"},
     {"chat_url": CHAT},
     {"duet_channel_id": "c1", "duet_message_id": "m1"},
 ])
@@ -272,9 +272,9 @@ def test_history_record_refuses_a_bad_or_mixed_hosted_source(hub, patch):  # noq
     ({"chat_url": CHAT}, "claude-ai", {"session": "0f6a7c2e-1234-4abc-8def-0123456789ab",
                                        "around": None}),
     ({"duet_channel_id": "chan_7Hq2", "duet_message_id": "msg_991"}, "duet", None),
-    ({"session_id": "sess-1", "session_machine": "MSI"}, "claude-code",
+    ({"session_id": "sess-1", "session_machine": "pc1"}, "claude-code",
      {"session": "sess-1", "around": None}),
-    ({"session_id": "sess-1", "session_machine": "MSI", "job_id": "cj_20261101T120000Z_a1b2c3"},
+    ({"session_id": "sess-1", "session_machine": "pc1", "job_id": "cj_20261101T120000Z_a1b2c3"},
      "claude-code", {"session": "cj_20261101T120000Z_a1b2c3", "around": None}),
 ])
 def test_the_existing_kinds_work_and_their_answers_have_no_new_fields(hub, args, kind, show):  # noqa: F811
