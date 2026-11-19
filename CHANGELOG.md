@@ -22,6 +22,16 @@ they have no corresponding tags.
   `bridgeSessionId` where it can be found so they can be re-fetched, and lists
   the surfaces no adapter can see. Strictly read-only (`mode=ro`); `--json`
   for scripts; exits 1 when something needs attention. (#28)
+- **`agent-history sessions`** lists the most recently active sessions,
+  newest first — one line each with last-active time (local), agent (tagged
+  with a non-default Claude Code profile, `claude-code[claude-org]`, and
+  `@machine` for another machine's sessions in a hub index), session id,
+  directory, and the first user prompt. `-n/--limit` (default 20), `--agent`, `--cwd`
+  substring, `--json`. Memory files, docs, and Claude Code subagent
+  transcripts (by path or by their 0.18 subagent label) are hidden by
+  default (they share session ids without being
+  conversations; a subagent's chunks would otherwise bump its parent's
+  activity and replace its first prompt); `--all` includes them (#28).
 
 ## [0.18.1] — 2026-11-19
 

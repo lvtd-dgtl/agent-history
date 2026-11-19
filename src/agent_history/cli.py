@@ -7,10 +7,10 @@ import json
 import sys
 
 from . import (__version__, adapters, config, coverage, embed, index, inject,
-               scrub, search, ship, show, store, sync, trigger, viewer)
+               recent, scrub, search, ship, show, store, sync, trigger, viewer)
 
 COMMANDS = {"index", "reindex", "reembed", "search", "sources", "doctor",
-            "datadir", "trigger", "show", "serve", "inject", "docs",
+            "datadir", "trigger", "show", "sessions", "serve", "inject", "docs",
             "purge", "strict", "scrub", "relabel", "ship", "ship-jobs", "confirm-indexed",
             "boat-export",
             "serve-ssh", "mcp", "import", "notes", "sync", "notify"}
@@ -254,6 +254,17 @@ def _build_parser() -> argparse.ArgumentParser:
     ctx.add_argument("--tenant", help="hub tenant the conversation is in")
     _add_where(ctx)
     ctx.add_argument("--json", action="store_true", dest="as_json")
+
+    sess = sub.add_parser(
+        "sessions", help="list the most recently active sessions")
+    sess.add_argument("-n", "--limit", type=int, default=20,
+                        help="sessions to list (default 20)")
+    sess.add_argument("--agent", help="only one agent, e.g. claude-code")
+    sess.add_argument("--cwd", help="filter by substring of the session's directory")
+    sess.add_argument("--all", action="store_true", dest="include_pseudo",
+                        help="also list memory files, docs and subagent "
+                             "transcripts (hidden by default)")
+    sess.add_argument("--json", action="store_true", dest="as_json")
 
     serve = sub.add_parser(
         "serve", help="local web viewer on 127.0.0.1 (loopback only)")
@@ -759,6 +770,11 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         if args.command == "serve-ssh":
             from . import serve_ssh
             return serve_ssh.run(args.tenants)
+        if args.command == "sessions":
+            return recent.run(limit=args.limit, cwd=args.cwd,
+                              agent=args.agent,
+                              include_pseudo=args.include_pseudo,
+                              as_json=args.as_json)
         if args.command == "serve":
             return viewer.run(port=args.port)
         if args.command == "mcp":
