@@ -7,7 +7,10 @@ existing installs keep working across the rename.
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import re
+import socket
 import sys
 from pathlib import Path
 
@@ -107,6 +110,168 @@ def lock_path() -> Path:
     return data_home() / ".index.lock"
 
 
+def ship_lock_path() -> Path:
+    return data_home() / ".ship.lock"
+
+
+def sync_lock_path() -> Path:
+    return data_home() / ".sync.lock"
+
+
+def sync_stamp_path() -> Path:
+    """Its mtime is when the last `sync` pass started (the debounce clock)."""
+    return data_home() / ".last-sync"
+
+
+def dirty_dir() -> Path:
+    """Spool of transcripts a hook reported as changed, one file each."""
+    return data_home() / "dirty"
+
+
+def sync_log_path() -> Path:
+    return data_home() / "sync.log"
+
+
+def env_file() -> Path:
+    """Where the shipper's settings live (the same file the cron/systemd
+    units read): $AGENT_HISTORY_ENV_FILE or ~/.config/agent-history/env."""
+    explicit = os.environ.get("AGENT_HISTORY_ENV_FILE")
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path.home() / ".config" / APP_NAME / "env"
+
+
+def load_env_file() -> None:
+    """Fill unset variables from the env file. A Claude Code hook starts with
+    the editor's environment, not the shell's, so the detached syncer needs
+    this to find the hub. Never overrides what is already set; never raises."""
+    try:
+        text = env_file().read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:]
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if key.startswith("AGENT_HISTORY_") or key == "OLLAMA_URL":
+            os.environ.setdefault(key, value)
+
+
+def ship_state_path() -> Path:
+    """What `ship` has already sent (hashes, backfill watermark)."""
+    return data_home() / "ship.db"
+
+
+def outbox_dir() -> Path:
+    """Batches written by `ship` and not yet uploaded."""
+    return data_home() / "outbox"
+
+
+def jobs_dir() -> Path:
+    """Where the claude -p job runner keeps one directory per job
+    (``<jobs>/<job_id>/job.json`` and ``transcript.jsonl``)."""
+    raw = (_env("AGENT_HISTORY_JOBS_DIR", "") or "").strip()
+    return Path(raw).expanduser() if raw else Path("/var/lib/claude-jobs/jobs")
+
+
+def machine_id() -> str:
+    """Name of this machine in a shared index: $AGENT_HISTORY_MACHINE or the
+    short hostname. Kept to filename-safe characters because the hub uses the
+    shipper's name as a directory."""
+    raw = (_env("AGENT_HISTORY_MACHINE", "") or "").strip()
+    if not raw:
+        raw = socket.gethostname().split(".")[0]
+    return re.sub(r"[^A-Za-z0-9._-]", "-", raw).strip(".-") or "unknown"
+
+
+def _truthy(name: str) -> bool:
+    return (_env(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def hub_ingest() -> str | None:
+    """rsync destination `ship` uploads to, e.g. ``ahub@host:``. The hub forces
+    the directory (rrsync), so the remote path is relative and usually empty."""
+    return (_env("AGENT_HISTORY_HUB_INGEST", "") or "").strip() or None
+
+
+def hub_key() -> str | None:
+    """Optional ssh identity file for uploads."""
+    return (_env("AGENT_HISTORY_HUB_KEY", "") or "").strip() or None
+
+
+def hub_mode() -> bool:
+    """This install is the hub: only the inbox is indexed, redaction forced."""
+    return _truthy("AGENT_HISTORY_HUB")
+
+
+def inbox_dir() -> Path | None:
+    """Where shippers' batches land, as ``<inbox>/<machine>/*.jsonl``."""
+    raw = (_env("AGENT_HISTORY_INBOX", "") or "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+_TENANT = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+
+
+def valid_tenant(name: str) -> bool:
+    return bool(_TENANT.match(name))
+
+
+def tenants_root() -> Path:
+    """Directory holding one data home per tenant on a multi-tenant hub."""
+    raw = (_env("AGENT_HISTORY_TENANTS", "") or "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / "tenants"
+
+
+def tenant_dir(name: str) -> Path:
+    """The data home of tenant ``name`` — the only way a tenant name becomes a
+    path, so the name is validated and the result must sit directly under the
+    tenants root."""
+    if not valid_tenant(name):
+        raise ValueError(f"invalid tenant name {name!r}")
+    root = tenants_root().resolve()
+    path = (root / name).resolve()
+    if path.parent != root:
+        raise ValueError(f"invalid tenant name {name!r}")
+    return path
+
+
+@contextlib.contextmanager
+def tenant_home(name: str):
+    """Point every data path at one tenant's index for the duration.
+
+    One index file per tenant, not a tenant column: separation is structural,
+    so a bug in a query cannot cross tenants because the other tenant's
+    database is never opened.
+    """
+    path = tenant_dir(name)
+    previous = os.environ.get("AGENT_HISTORY_HOME")
+    os.environ["AGENT_HISTORY_HOME"] = str(path)
+    try:
+        yield path
+    finally:
+        if previous is None:
+            os.environ.pop("AGENT_HISTORY_HOME", None)
+        else:
+            os.environ["AGENT_HISTORY_HOME"] = previous
+
+
+def remote_url() -> str | None:
+    """``ssh://user@host[:port]`` of the hub to search, if configured."""
+    return (_env("AGENT_HISTORY_REMOTE", "") or "").strip() or None
+
+
+def remote_key() -> str | None:
+    """Optional ssh identity file for hub searches."""
+    return (_env("AGENT_HISTORY_REMOTE_KEY", "") or "").strip() or None
+
+
 def ollama_url() -> str:
     return os.environ.get("OLLAMA_URL", "http://localhost:11434").rstrip("/")
 
@@ -126,6 +291,58 @@ def claude_projects_dir() -> Path:
     if explicit:
         return Path(explicit).expanduser()
     return Path.home() / ".claude/projects"
+
+
+# Claude Code config profiles: ~/.claude by default, ~/.claude-<name> for any
+# other account (CLAUDE_CONFIG_DIR=~/.claude-org). Each keeps its own projects/.
+CLAUDE_PROFILE_MARKER = ".claude*/projects"
+
+
+def _claude_profiles_in(home: Path) -> list[Path]:
+    """Every <home>/.claude*/projects directory, ~/.claude first."""
+    try:
+        return sorted(p for p in home.glob(CLAUDE_PROFILE_MARKER) if p.is_dir())
+    except OSError:
+        return []
+
+
+def claude_profile_dirs(_users_dir: Path | None = None) -> list[Path]:
+    """Transcript roots for every Claude Code config profile on this machine.
+
+    That is ~/.claude/projects, ~/.claude-<name>/projects for each other
+    profile, $CLAUDE_CONFIG_DIR/projects when it points elsewhere, and the
+    same .claude*/projects set in the WSL Windows profile. Only existing
+    directories are returned, de-duplicated by resolved path.
+
+    $AGENT_HISTORY_PROJECTS replaces the local discovery (home glob and
+    $CLAUDE_CONFIG_DIR) with the one directory it names; the Windows side is
+    still scanned unless AGENT_HISTORY_NO_WSL is set, as before.
+
+    `_users_dir` is passed through to `wsl_windows_homes` for tests.
+    """
+    if _env("AGENT_HISTORY_PROJECTS"):
+        dirs = [claude_projects_dir()]
+    else:
+        dirs = _claude_profiles_in(Path.home())
+        config_dir = os.environ.get("CLAUDE_CONFIG_DIR", "").strip()
+        if config_dir:
+            dirs.append(Path(config_dir).expanduser() / "projects")
+    for home in wsl_windows_homes(_users_dir, marker=CLAUDE_PROFILE_MARKER):
+        dirs += _claude_profiles_in(home)
+
+    seen: set[Path] = set()
+    out: list[Path] = []
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        try:
+            key = d.resolve()
+        except OSError:
+            key = d
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
 
 
 def strict_path() -> Path:
@@ -156,8 +373,11 @@ def redact_enabled() -> bool:
     Off by default: on a single machine the index is often the only place a
     credential can still be found, and recalling it is a feature. On with
     `AGENT_HISTORY_REDACT=on`, or implied by strict mode. Anything that leaves
-    the machine (bundles, a hub) is redacted regardless of this setting.
+    the machine (bundles, a hub) is redacted regardless of this setting; the
+    hub itself never indexes anything unredacted.
     """
+    if hub_mode():
+        return True
     env = (_env("AGENT_HISTORY_REDACT", "") or "").strip().lower()
     if env in {"1", "on", "true", "yes"}:
         return True
@@ -351,7 +571,8 @@ def wsl_windows_homes(_users_dir: Path | None = None,
 
     `marker` is the per-agent directory that identifies a candidate profile —
     each adapter passes its own, so a profile that only ever ran one agent is
-    still found by that agent's adapter.
+    still found by that agent's adapter. It may be a glob (".claude*/projects"),
+    so a profile that only has a second Claude account still counts.
 
     Returns an empty list on native Linux and macOS, where /mnt/c is absent.
 
@@ -370,7 +591,7 @@ def wsl_windows_homes(_users_dir: Path | None = None,
             if p.is_dir()
             and p.name not in _WSL_SKIP
             and not p.name.startswith("TEMP")
-            and (p / marker).is_dir()
+            and _has_marker(p, marker)
         ]
     except OSError:
         return []
@@ -386,3 +607,9 @@ def wsl_windows_homes(_users_dir: Path | None = None,
             file=sys.stderr,
         )
     return []
+
+
+def _has_marker(home: Path, marker: str) -> bool:
+    if any(ch in marker for ch in "*?["):
+        return any(p.is_dir() for p in home.glob(marker))
+    return (home / marker).is_dir()

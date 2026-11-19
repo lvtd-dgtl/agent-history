@@ -10,7 +10,7 @@ skipped.
 Workspace markdown (MEMORY.md, memory/ tree) is indexed too — same rationale
 as Claude Code project memory: hand-written durable notes surface first.
 
-Format verified 2026-08-10 against live files on openclaw-soaring-eagle
+Format verified 2026-08-10 against live files on a running OpenClaw install
 (OpenClaw 2026.4.26, session header `version: 3`).
 """
 from __future__ import annotations
@@ -47,12 +47,20 @@ class OpenClawAdapter:
 
     def records(self) -> Iterator[Record]:
         for root in self.roots():
-            for path in sorted(root.glob("agents/*/sessions/*.jsonl")):
-                if path.name.endswith(".trajectory.jsonl"):
-                    continue
+            for path in self._session_files(root):
                 yield from self._read_transcript(path)
             for path in self._workspace_markdown(root):
                 yield from self._read_markdown(path)
+
+    # ------------------------------------------------------------------ files
+
+    def _transcript_files(self) -> list[Path]:
+        """Every session transcript across all roots (used by coverage)."""
+        return [p for root in self.roots() for p in self._session_files(root)]
+
+    def _session_files(self, root: Path) -> list[Path]:
+        return [p for p in sorted(root.glob("agents/*/sessions/*.jsonl"))
+                if not p.name.endswith(".trajectory.jsonl")]
 
     # ---------------------------------------------------------------- parsing
 
