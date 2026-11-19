@@ -118,7 +118,7 @@ jobs:
                           rel = cmd.split('}')[-1].strip('"').lstrip('/').split()[0]
                           if not pathlib.Path(rel).exists():
                               sys.exit(f'{event}: missing script {rel}')
-                      elif not cmd.startswith('agent-history '):
+                      elif not (cmd.startswith('agent-history ') or cmd == 'agent-history-notify'):
                           sys.exit(f'{event}: unrecognised hook command {cmd!r}')
                       print(f'{event}: {cmd}')
           PY

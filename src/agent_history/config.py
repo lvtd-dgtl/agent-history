@@ -7,7 +7,10 @@ existing installs keep working across the rename.
 """
 from __future__ import annotations
 
+import contextlib
 import os
+import re
+import socket
 import sys
 from pathlib import Path
 
@@ -105,6 +108,168 @@ def stamp_path() -> Path:
 
 def lock_path() -> Path:
     return data_home() / ".index.lock"
+
+
+def ship_lock_path() -> Path:
+    return data_home() / ".ship.lock"
+
+
+def sync_lock_path() -> Path:
+    return data_home() / ".sync.lock"
+
+
+def sync_stamp_path() -> Path:
+    """Its mtime is when the last `sync` pass started (the debounce clock)."""
+    return data_home() / ".last-sync"
+
+
+def dirty_dir() -> Path:
+    """Spool of transcripts a hook reported as changed, one file each."""
+    return data_home() / "dirty"
+
+
+def sync_log_path() -> Path:
+    return data_home() / "sync.log"
+
+
+def env_file() -> Path:
+    """Where the shipper's settings live (the same file the cron/systemd
+    units read): $AGENT_HISTORY_ENV_FILE or ~/.config/agent-history/env."""
+    explicit = os.environ.get("AGENT_HISTORY_ENV_FILE")
+    if explicit:
+        return Path(explicit).expanduser()
+    return Path.home() / ".config" / APP_NAME / "env"
+
+
+def load_env_file() -> None:
+    """Fill unset variables from the env file. A Claude Code hook starts with
+    the editor's environment, not the shell's, so the detached syncer needs
+    this to find the hub. Never overrides what is already set; never raises."""
+    try:
+        text = env_file().read_text(encoding="utf-8")
+    except OSError:
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        if line.startswith("export "):
+            line = line[7:]
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if key.startswith("AGENT_HISTORY_") or key == "OLLAMA_URL":
+            os.environ.setdefault(key, value)
+
+
+def ship_state_path() -> Path:
+    """What `ship` has already sent (hashes, backfill watermark)."""
+    return data_home() / "ship.db"
+
+
+def outbox_dir() -> Path:
+    """Batches written by `ship` and not yet uploaded."""
+    return data_home() / "outbox"
+
+
+def jobs_dir() -> Path:
+    """Where the claude -p job runner keeps one directory per job
+    (``<jobs>/<job_id>/job.json`` and ``transcript.jsonl``)."""
+    raw = (_env("AGENT_HISTORY_JOBS_DIR", "") or "").strip()
+    return Path(raw).expanduser() if raw else Path("/var/lib/claude-jobs/jobs")
+
+
+def machine_id() -> str:
+    """Name of this machine in a shared index: $AGENT_HISTORY_MACHINE or the
+    short hostname. Kept to filename-safe characters because the hub uses the
+    shipper's name as a directory."""
+    raw = (_env("AGENT_HISTORY_MACHINE", "") or "").strip()
+    if not raw:
+        raw = socket.gethostname().split(".")[0]
+    return re.sub(r"[^A-Za-z0-9._-]", "-", raw).strip(".-") or "unknown"
+
+
+def _truthy(name: str) -> bool:
+    return (_env(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def hub_ingest() -> str | None:
+    """rsync destination `ship` uploads to, e.g. ``ahub@host:``. The hub forces
+    the directory (rrsync), so the remote path is relative and usually empty."""
+    return (_env("AGENT_HISTORY_HUB_INGEST", "") or "").strip() or None
+
+
+def hub_key() -> str | None:
+    """Optional ssh identity file for uploads."""
+    return (_env("AGENT_HISTORY_HUB_KEY", "") or "").strip() or None
+
+
+def hub_mode() -> bool:
+    """This install is the hub: only the inbox is indexed, redaction forced."""
+    return _truthy("AGENT_HISTORY_HUB")
+
+
+def inbox_dir() -> Path | None:
+    """Where shippers' batches land, as ``<inbox>/<machine>/*.jsonl``."""
+    raw = (_env("AGENT_HISTORY_INBOX", "") or "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+_TENANT = re.compile(r"^[a-z0-9][a-z0-9-]{0,40}$")
+
+
+def valid_tenant(name: str) -> bool:
+    return bool(_TENANT.match(name))
+
+
+def tenants_root() -> Path:
+    """Directory holding one data home per tenant on a multi-tenant hub."""
+    raw = (_env("AGENT_HISTORY_TENANTS", "") or "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / "tenants"
+
+
+def tenant_dir(name: str) -> Path:
+    """The data home of tenant ``name`` — the only way a tenant name becomes a
+    path, so the name is validated and the result must sit directly under the
+    tenants root."""
+    if not valid_tenant(name):
+        raise ValueError(f"invalid tenant name {name!r}")
+    root = tenants_root().resolve()
+    path = (root / name).resolve()
+    if path.parent != root:
+        raise ValueError(f"invalid tenant name {name!r}")
+    return path
+
+
+@contextlib.contextmanager
+def tenant_home(name: str):
+    """Point every data path at one tenant's index for the duration.
+
+    One index file per tenant, not a tenant column: separation is structural,
+    so a bug in a query cannot cross tenants because the other tenant's
+    database is never opened.
+    """
+    path = tenant_dir(name)
+    previous = os.environ.get("AGENT_HISTORY_HOME")
+    os.environ["AGENT_HISTORY_HOME"] = str(path)
+    try:
+        yield path
+    finally:
+        if previous is None:
+            os.environ.pop("AGENT_HISTORY_HOME", None)
+        else:
+            os.environ["AGENT_HISTORY_HOME"] = previous
+
+
+def remote_url() -> str | None:
+    """``ssh://user@host[:port]`` of the hub to search, if configured."""
+    return (_env("AGENT_HISTORY_REMOTE", "") or "").strip() or None
+
+
+def remote_key() -> str | None:
+    """Optional ssh identity file for hub searches."""
+    return (_env("AGENT_HISTORY_REMOTE_KEY", "") or "").strip() or None
 
 
 def ollama_url() -> str:
@@ -208,8 +373,11 @@ def redact_enabled() -> bool:
     Off by default: on a single machine the index is often the only place a
     credential can still be found, and recalling it is a feature. On with
     `AGENT_HISTORY_REDACT=on`, or implied by strict mode. Anything that leaves
-    the machine (bundles, a hub) is redacted regardless of this setting.
+    the machine (bundles, a hub) is redacted regardless of this setting; the
+    hub itself never indexes anything unredacted.
     """
+    if hub_mode():
+        return True
     env = (_env("AGENT_HISTORY_REDACT", "") or "").strip().lower()
     if env in {"1", "on", "true", "yes"}:
         return True

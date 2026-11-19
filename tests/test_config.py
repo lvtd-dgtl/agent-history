@@ -108,7 +108,7 @@ def test_several_profiles_selects_none(monkeypatch, tmp_path, capsys):
 
 
 def test_system_profiles_are_ignored(monkeypatch, tmp_path):
-    users = _fake_users(tmp_path, ["alice", "Public", "TEMP.PC"])
+    users = _fake_users(tmp_path, ["alice", "Public", "TEMP.PC1"])
     monkeypatch.delenv("AGENT_HISTORY_NO_WSL", raising=False)
     assert [p.name for p in config.wsl_windows_homes(_users_dir=users)] == ["alice"]
 
