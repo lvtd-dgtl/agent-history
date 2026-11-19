@@ -11,6 +11,12 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+## [0.18.0] — 2026-11-18
+
+The release line, with near-real-time sync merged in. Builds that reported
+0.17.0 were pre-release snapshots of different branches; this is the first
+version where `main`, the release branch and the installs agree.
+
 ### Added
 - **Every Claude Code config profile is indexed.** Sessions from a second
   account (`CLAUDE_CONFIG_DIR=~/.claude-org`, or any `~/.claude-<name>`) were
