@@ -14,6 +14,11 @@ from conftest import msg, write_transcript
 
 LONG = "a message long enough to be indexed and shipped to the hub, number %d"
 
+# Tests that read the vector index back; some Python builds (notably the
+# macOS CI ones) cannot load SQLite extensions at all.
+needs_vec = pytest.mark.skipif(not store.extensions_supported(),
+                               reason="this Python cannot load SQLite extensions")
+
 
 def lines(*items):
     return "".join(json.dumps(i) + "\n" for i in items)
@@ -84,6 +89,7 @@ def test_tail_read_returns_only_new_records_and_leaves_partial_line(tmp_path):
 
 # ------------------------------------------------------------- incremental
 
+@needs_vec
 def test_second_pass_reads_only_the_appended_turn(transcripts, hub, fake_embed):
     path = transcripts("p", "s", [msg("user", LONG % 1)])
     assert run_once(path)
@@ -100,6 +106,7 @@ def test_second_pass_reads_only_the_appended_turn(transcripts, hub, fake_embed):
     state.close()
 
 
+@needs_vec
 def test_unchanged_file_is_skipped_without_reading(transcripts, hub, fake_embed,
                                                    monkeypatch):
     path = transcripts("p", "s", [msg("user", LONG % 1)])
@@ -158,6 +165,7 @@ def move(path, project):
     return shutil.move(str(path), str(dest / path.name)) and dest / path.name
 
 
+@needs_vec
 def test_moved_transcript_ships_and_indexes_nothing_new(transcripts, hub,
                                                         fake_embed):
     path = transcripts("old", "s", [msg("user", LONG % 1),
@@ -203,6 +211,7 @@ def test_memory_files_keep_their_origin_in_the_hash():
                                    "user", "x")
 
 
+@needs_vec
 def test_moved_transcript_keeps_its_session_uid(transcripts, fake_embed):
     path = transcripts("old", "s", [msg("user", LONG % 1)])
     index.run()
@@ -227,6 +236,7 @@ def test_notify_coalesces_and_filters_payload_paths(isolated_env):
     assert notify.payload_paths({"transcript_path": "/x/y.txt"}) == []
 
 
+@needs_vec
 def test_run_once_drains_spool_and_ships(transcripts, hub, fake_embed,
                                          monkeypatch):
     monkeypatch.setenv("AGENT_HISTORY_SYNC_INTERVAL", "0")
