@@ -114,6 +114,7 @@ def test_refuses_on_id_gap():
 @pytest.mark.parametrize("field, value", [
     ("role", "assistant"), ("timestamp", "t2"), ("origin", "o2"),
     ("session_id", "s2"), ("machine", "m2"), ("agent", "b"),
+    ("agent_id", "a74d"),
 ])
 def test_refuses_on_metadata_mismatch(field, value):
     rows = _chunks(LONG)
@@ -381,3 +382,22 @@ def test_stitch_coverage_on_an_index_built_with_the_real_chunker(
         f"SELECT {stitch.COLUMNS} FROM chunks ORDER BY id")]
     db.close()
     assert sorted(r.text for r in _join(rows)) == sorted(texts)
+
+
+@needs_vec
+def test_backfill_keeps_subagent_labels_on_stitched_records(
+        transcripts, fake_embed, hub, monkeypatch):
+    text = straddling(JWT, 1250)
+    path = _index_unredacted(transcripts, monkeypatch, text)
+    path.unlink()
+    db, _ = store.open_for_write()
+    db.execute("UPDATE chunks SET agent_id = 'a74d', "
+               "agent_type = 'job-researcher', sidechain = 1")
+    db.commit()
+    db.close()
+    assert ship.run(backfill=True) == 0
+    (rec,) = shipped(hub)                      # still one whole record
+    assert (rec["agent_id"], rec["agent_type"], rec["sidechain"]) == (
+        "a74d", "job-researcher", True)
+    for f in _fragments(JWT):
+        assert f not in rec["text"]

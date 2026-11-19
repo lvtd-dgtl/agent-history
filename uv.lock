@@ -10,7 +10,7 @@ resolution-markers = [
 
 [[package]]
 name = "agent-history"
-version = "0.18.0"
+version = "0.18.1"
 source = { editable = "." }
 dependencies = [
     { name = "requests" },
