@@ -9,7 +9,7 @@ Design and limits: `docs/design/side-chat-capture.md`.
 Linux and WSL only. The hook finds the side-chat launch by reading
 `/proc/<pid>/cmdline` and `/proc/<pid>/stat`; native Windows and macOS have no
 `/proc`, so there it silently captures nothing (no error, no file). Whether
-the Claude desktop app's `claude` process on the MSI runs inside WSL is decided
+the Claude desktop app's `claude` process on the Windows PC runs inside WSL is decided
 by the live test there: if it does, capture works; if it runs natively on
 Windows, it will not.
 
@@ -23,8 +23,8 @@ The hook captures a turn only if ALL of these hold:
 2. The session has no transcript file.
 3. The environment variable `CLAUDE_CODE_ENTRYPOINT` is in the allowlist,
    default `claude-desktop`. **This value is an unverified guess**; the live
-   test on the MSI confirms it. Headless runs (`claude -p`, the Agent SDK) show
-   `sdk-cli` on fleet-1 and never match. To try other values, set
+   test on the Windows PC confirms it. Headless runs (`claude -p`, the Agent SDK) show
+   `sdk-cli` on the fleet host and never match. To try other values, set
    `AGENT_HISTORY_SIDE_CHAT_ENTRYPOINTS` (comma separated; it replaces the
    default) in the environment Claude Code runs in.
 4. Not opted out: `AGENT_HISTORY_SIDE_CHATS=off` (also `0`, `false`, `no`) in
@@ -61,15 +61,15 @@ Check first whether other managed policy already exists:
 
     ls /etc/claude-code/
 
-### On the MSI (WSL Ubuntu, no checkout of this worktree)
+### On the Windows PC (WSL Ubuntu, no checkout of this worktree)
 
 Fetch the two files from GitHub at a pinned commit. `SHA` is the full 40-char
-merged or reviewed commit on lvtd-dgtl/agent-history; it must be pushed first.
+merged or reviewed commit on d3layd/agent-history; it must be pushed first.
 
     set -e
     SHA=<40-char commit sha>
     d=$(mktemp -d)
-    git clone --no-checkout https://github.com/lvtd-dgtl/agent-history.git "$d/repo"
+    git clone --no-checkout https://github.com/d3layd/agent-history.git "$d/repo"
     git -C "$d/repo" show "$SHA:hooks/side_chat_capture.py" > "$d/side_chat_capture.py"
     git -C "$d/repo" show "$SHA:deploy/managed-settings.d/agent-history-side-chats.json" > "$d/agent-history-side-chats.json"
     test -s "$d/side_chat_capture.py"
@@ -84,13 +84,13 @@ Install the script before the drop-in (as above), so the drop-in never points at
 a missing file. (If it ever does, the command still exits 0.) With `gh` signed
 in, this also fetches a file:
 
-    gh api "repos/lvtd-dgtl/agent-history/contents/hooks/side_chat_capture.py?ref=$SHA" -H 'Accept: application/vnd.github.raw'
+    gh api "repos/d3layd/agent-history/contents/hooks/side_chat_capture.py?ref=$SHA" -H 'Accept: application/vnd.github.raw'
 
-Capture works with just those files. To index the captured files the MSI's
+Capture works with just those files. To index the captured files the Windows PC's
 agent-history needs a build containing the `claude-code-side` adapter. After
 the PR merges (the README's install method is `uv tool install`):
 
-    uv tool install --force "agent-history @ git+https://github.com/lvtd-dgtl/agent-history@<merged ref>"
+    uv tool install --force "agent-history @ git+https://github.com/d3layd/agent-history@<merged ref>"
 
 ### On a machine with this checkout
 

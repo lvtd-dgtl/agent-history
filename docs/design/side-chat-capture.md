@@ -16,7 +16,7 @@ transcript is written, so nothing is searchable.
    so a normal session nested under an outer fork run is not captured;
    (b) `CLAUDE_CODE_ENTRYPOINT` is in an allowlist, default `claude-desktop`
    (an unverified guess; override with `AGENT_HISTORY_SIDE_CHAT_ENTRYPOINTS`,
-   comma separated; headless fleet-1 runs report `sdk-cli` and never match);
+   comma separated; headless the fleet host runs report `sdk-cli` and never match);
    (c) not opted out: `AGENT_HISTORY_SIDE_CHATS=off` or the marker file
    `~/.claude/side-chats/.disabled`; and (d) `transcript_path` is non-empty
    with no file behind it. A
@@ -45,7 +45,7 @@ transcript is written, so nothing is searchable.
    maps `claude-code-side` to `claude-code`; the link works on a hub too since
    the agent name travels on the wire.
 
-## Evidence (spike, 2026-11-09, claude 2.1.318 on fleet-1)
+## Evidence (spike, 2026-11-09, claude 2.1.318 on the fleet host)
 Both hooks fire under `--no-session-persistence` and also with
 `--setting-sources=` when hooks come from `--settings`; Stop carries
 `last_assistant_message`; `transcript_path` is given but the file does not
@@ -58,15 +58,15 @@ not block the chat. Raw notes: `~/fleet/experiments/side-chat-hook-2026-11-09/FI
 - Linux and WSL only. The hook finds the side-chat launch by reading
   `/proc/<pid>/cmdline` and `/proc/<pid>/stat`. On native Windows or macOS
   there is no `/proc`, so it silently captures nothing (no error, no file).
-  The live test on the MSI decides whether the desktop app's `claude` process
+  The live test on the Windows PC decides whether the desktop app's `claude` process
   runs inside WSL (then it works) or natively on Windows (then it does not,
   and detection would need a different method). The detection logic is
   unchanged; the hook's tests use a fake `/proc` and run on any OS.
 - Not tested with the real desktop launch. `CLAUDE_CODE_ENTRYPOINT` is
   recorded in each line, but the gate depends on it: `claude-desktop` is a
-  guess. If the MSI test leaves no file, check `CLAUDE_CODE_ENTRYPOINT` first
+  guess. If the Windows PC test leaves no file, check `CLAUDE_CODE_ENTRYPOINT` first
   (or set `AGENT_HISTORY_SIDE_CHAT_ENTRYPOINTS` to candidates).
-- Decision (Dennis, 2026-11-11): narrow capture plus an opt-out; it still
+- Decision (the owner, 2026-11-11): narrow capture plus an opt-out; it still
   ships to the hub.
 - The managed-settings command ends in `; exit 0` and is guarded by `[ -r
   script ]`: exit 2 from a hook blocks the prompt, so a missing script must not

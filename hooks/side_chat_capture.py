@@ -33,7 +33,7 @@ UUID_RE = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 EVENTS = {"UserPromptSubmit": "user", "Stop": "assistant"}
 MAX_ANCESTORS = 4
-# UNVERIFIED guess for the desktop app; the live test on the MSI confirms it.
+# UNVERIFIED guess for the desktop app; the live test on the Windows PC confirms it.
 # Headless runs (claude -p, the Agent SDK) report `sdk-cli` and never match.
 DEFAULT_ENTRYPOINTS = ("claude-desktop",)
 O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
