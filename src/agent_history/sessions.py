@@ -169,6 +169,16 @@ def update_meta(db: sqlite3.Connection, uid: str, **fields) -> None:
                (json.dumps(meta, ensure_ascii=False), uid))
 
 
+# Agents whose forks hang off a session of a different agent: a desktop side
+# chat (`claude-code-side`) forks a normal Claude Code session.
+FORK_PARENT_AGENT = {"claude-code-side": "claude-code"}
+
+
+def fork_parent_agent(agent: str) -> str:
+    """The agent a fork's parent session belongs to (usually the same one)."""
+    return FORK_PARENT_AGENT.get(agent, agent)
+
+
 MAX_FORKS = 500
 
 
