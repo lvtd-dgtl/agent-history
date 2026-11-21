@@ -26,6 +26,13 @@ they have no corresponding tags.
   from WSL; WAL databases on a Windows drive fall back to a private copy when
   they cannot be opened read-only in place.
 
+### Fixed
+- **Every command reads `~/.config/agent-history/env`**, not only `sync`.
+  Shells that agents start (Claude Code, T3 Code, systemd) skip the login
+  profile, so `AGENT_HISTORY_REMOTE` was unset there and `search` failed with
+  "no index" on a machine that only ships. Set variables still win;
+  `serve-ssh` is unchanged.
+
 ## [0.19.0] — 2026-11-19
 
 Two read-only commands for checking what the index holds.
