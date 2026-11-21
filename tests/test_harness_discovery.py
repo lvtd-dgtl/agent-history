@@ -19,6 +19,7 @@ def wsl(isolated_env, monkeypatch):
     home = isolated_env / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # Path.home() reads this on Windows
     monkeypatch.delenv("AGENT_HISTORY_NO_WSL", raising=False)
     monkeypatch.delenv("AGENT_HISTORY_HERMES_DIRS", raising=False)
     return users
