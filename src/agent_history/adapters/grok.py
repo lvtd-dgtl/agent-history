@@ -129,6 +129,7 @@ def _cwd(session_dir: Path) -> str:
 
 def _iso(epoch) -> str:
     try:
-        return datetime.datetime.fromtimestamp(float(epoch)).isoformat()
+        return datetime.datetime.fromtimestamp(
+            float(epoch), datetime.timezone.utc).isoformat()
     except (TypeError, ValueError, OSError, OverflowError):
         return ""
