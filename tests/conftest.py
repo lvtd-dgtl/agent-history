@@ -77,6 +77,8 @@ def isolated_env(tmp_path, monkeypatch):
     # WSL detection reads a real absolute path; keep it out of unit tests.
     monkeypatch.setenv("AGENT_HISTORY_NO_WSL", "1")
     monkeypatch.setenv("AGENT_HISTORY_MACHINE", "testbox")
+    # cli.main reads the env file; never let it be the developer's real one.
+    monkeypatch.setenv("AGENT_HISTORY_ENV_FILE", str(tmp_path / "no-env-file"))
     (tmp_path / "projects").mkdir()
     return tmp_path
 

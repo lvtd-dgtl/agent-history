@@ -254,3 +254,27 @@ def test_hub_hits_are_tagged_with_their_claude_profile(ssh, local_index, capsys)
 
     search.run("deploy pipeline", mode="text", k=5)
     assert "claude-code[claude-org]/assistant" in capsys.readouterr().out
+
+
+# --- env file -------------------------------------------------------------------
+
+def test_cli_search_finds_the_hub_from_the_env_file(ssh, monkeypatch, tmp_path, capsys):
+    """An agent shell skips the login profile, so the remote is only in the
+    env file. `search` must still reach the hub, not fail on a missing index."""
+    monkeypatch.delenv("AGENT_HISTORY_REMOTE")
+    env = tmp_path / "env"
+    env.write_text("AGENT_HISTORY_REMOTE=ssh://reader@hub.example.invalid:2222\n")
+    monkeypatch.setenv("AGENT_HISTORY_ENV_FILE", str(env))
+    assert cli.main(["search", "--mode", "text", "deploy pipeline"]) == 0
+    (call,) = ssh
+    assert shlex.split(call["argv"][-1])[0] == "search"
+
+
+def test_serve_ssh_does_not_read_the_env_file(monkeypatch, tmp_path):
+    env = tmp_path / "env"
+    env.write_text("AGENT_HISTORY_REMOTE=ssh://reader@hub.example.invalid\n")
+    monkeypatch.setenv("AGENT_HISTORY_ENV_FILE", str(env))
+    from agent_history import serve_ssh
+    monkeypatch.setattr(serve_ssh, "run", lambda tenants: 0)
+    assert cli.main(["serve-ssh"]) == 0
+    assert config.remote_url() is None

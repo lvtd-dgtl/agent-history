@@ -690,6 +690,13 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = _build_parser()
     args = parser.parse_args(_normalise(list(sys.argv[1:] if argv is None else argv)))
+    # Agent shells (Claude Code, T3 Code, systemd) start without the login
+    # profile, so AGENT_HISTORY_REMOTE was unset there: `search` fell back to
+    # a local index that a ship-only machine never builds, and failed. Read
+    # the same env file the shipper reads. It only fills unset variables.
+    # `serve-ssh` runs on the hub for other machines and keeps its own env.
+    if args.command != "serve-ssh":
+        config.load_env_file()
     return dispatch(parser, args)
 
 
