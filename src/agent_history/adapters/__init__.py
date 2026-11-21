@@ -97,10 +97,13 @@ def all_adapters() -> list[Adapter]:
     from .claude_code import ClaudeCodeAdapter
     from .codex import CodexAdapter
     from .docs import DocsAdapter
+    from .gemini_cli import GeminiCliAdapter
+    from .grok import GrokAdapter
     from .hermes import HermesAdapter
     from .inbox import InboxAdapter
     from .openclaw import OpenClawAdapter
     from .opencode import OpenCodeAdapter
+    from .t3code import T3CodeAdapter
 
     # The hub indexes what machines ship it and nothing local: whatever
     # transcripts happen to sit on that box are not its history.
@@ -112,6 +115,9 @@ def all_adapters() -> list[Adapter]:
         OpenCodeAdapter(),
         HermesAdapter(),
         OpenClawAdapter(),
+        GrokAdapter(),
+        GeminiCliAdapter(),
+        T3CodeAdapter(),
         DocsAdapter(),
         InboxAdapter(),
     ]

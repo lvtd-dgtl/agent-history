@@ -52,6 +52,8 @@ UNINDEXED_SURFACES = [
     ("claude.ai chats", "stored server-side; no local transcript"),
     ("claude.ai/code cloud sessions", "run remotely; nothing written here"),
     ("Claude Desktop Cowork", "no adapter yet"),
+    ("Antigravity conversations", "encrypted protobuf on disk; threads run "
+                                 "through T3 Code are indexed from its store"),
     ("fleet machines", "index on each host, or sync their transcripts into "
                        "AGENT_HISTORY_EXTRA_DIRS"),
 ]
