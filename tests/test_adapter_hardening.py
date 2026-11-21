@@ -106,7 +106,7 @@ def test_snapshot_retries_when_source_moves_then_settles(isolated_env, monkeypat
         real_copy(src, dest)
         calls.append(src)
         if len(calls) == 1:  # a checkpoint lands mid-copy, once
-            os.utime(path, ns=(1, 1))
+            os.utime(path, (1_500_000_000, 1_500_000_000))
 
     monkeypatch.setattr(_sqlite.shutil, "copyfile", touching)
     with _sqlite.open_readonly(path) as conn:
@@ -119,12 +119,12 @@ def test_snapshot_gives_up_if_source_never_settles(isolated_env, monkeypatch):
     _live_db(path)
     _force_copy(monkeypatch)
     real_copy = _sqlite.shutil.copyfile
-    tick = [10]
+    tick = [1_600_000_000]
 
     def always(src, dest):
         real_copy(src, dest)
-        tick[0] += 1
-        os.utime(path, ns=(tick[0], tick[0]))
+        tick[0] += 10
+        os.utime(path, (tick[0], tick[0]))
 
     monkeypatch.setattr(_sqlite.shutil, "copyfile", always)
     with _sqlite.open_readonly(path) as conn:
