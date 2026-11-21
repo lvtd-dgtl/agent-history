@@ -56,7 +56,7 @@ class GrokAdapter:
         session_id = session_dir.name
         cwd = _cwd(session_dir)
         try:
-            settled = (time.time() - updates.stat().st_mtime) >= self.settle_seconds
+            began = updates.stat()
             handle = updates.open(encoding="utf-8", errors="replace")
         except OSError:
             return
@@ -94,7 +94,14 @@ class GrokAdapter:
                     # A tool call, plan or other event closes the message.
                     yield from flush()
                     role, parts = "", []
-        if settled:
+        # Hold the trailing message unless the file is unchanged since the
+        # read began and has been quiet for the settle interval, judged now.
+        try:
+            now = updates.stat()
+        except OSError:
+            return
+        if ((now.st_size, now.st_mtime_ns) == (began.st_size, began.st_mtime_ns)
+                and time.time() - now.st_mtime >= self.settle_seconds):
             yield from flush()
 
 

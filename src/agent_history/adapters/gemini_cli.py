@@ -67,8 +67,12 @@ class GeminiCliAdapter:
                     continue
                 update = entry.get("$set")
                 if isinstance(update, dict):
-                    for msg in update.get("messages") or []:
-                        _fold(messages, msg)
+                    if "messages" in update:
+                        # A $set that carries messages replaces the list (an
+                        # empty one clears it); metadata-only keeps it.
+                        messages.clear()
+                        for msg in update["messages"] or []:
+                            _fold(messages, msg)
                 elif "type" in entry:
                     _fold(messages, entry)
         for msg in messages.values():

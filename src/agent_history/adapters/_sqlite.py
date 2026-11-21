@@ -43,17 +43,59 @@ def open_readonly(path: Path) -> Iterator[sqlite3.Connection | None]:
             db.close()
         return
     with tempfile.TemporaryDirectory(prefix="agent-history-") as tmp:
-        copy = Path(tmp) / path.name
-        try:
-            for suffix in ("", "-wal", "-shm"):
-                src = path.with_name(path.name + suffix)
-                if src.is_file():
-                    shutil.copyfile(src, copy.with_name(copy.name + suffix))
-            db = _connect(copy)
-        except (OSError, sqlite3.Error):
+        db = _snapshot(path, Path(tmp))
+        if db is None:
             yield None
             return
         try:
             yield db
         finally:
             db.close()
+
+
+SNAPSHOT_TRIES = 4
+
+
+def _stamp(path: Path):
+    try:
+        st = path.stat()
+    except FileNotFoundError:
+        return None
+    return (st.st_size, st.st_mtime_ns)
+
+
+def _snapshot(path: Path, tmp: Path) -> sqlite3.Connection | None:
+    """A consistent private copy of `path`, or None.
+
+    A rollback journal means a writer may have uncommitted pages in the main
+    file that only the journal can undo, so such a source is not copied. The
+    main file, -wal and -shm are copied while the writer may still be
+    checkpointing, which could pair old main-file pages with a newer WAL; so
+    the three files' size and mtime are compared before and after each copy
+    and the copy is retried if anything moved. (The backup API would need a
+    read-only connection to the source, which is exactly what fails on a
+    Windows drive.) Never settling gives up.
+    """
+    names = ("", "-wal", "-shm")
+    srcs = [path.with_name(path.name + n) for n in names]
+    if path.with_name(path.name + "-journal").is_file():
+        return None
+    copy = tmp / path.name
+    for _ in range(SNAPSHOT_TRIES):
+        before = [_stamp(s) for s in srcs]
+        try:
+            for s, n in zip(srcs, names):
+                dest = copy.with_name(copy.name + n)
+                if s.is_file():
+                    shutil.copyfile(s, dest)
+                elif dest.exists():
+                    dest.unlink()
+        except OSError:
+            return None
+        if before != [_stamp(s) for s in srcs]:
+            continue
+        try:
+            return _connect(copy)
+        except sqlite3.Error:
+            return None
+    return None
