@@ -18,6 +18,10 @@ conversation files are encrypted protobuf, and any provider T3 adds that this
 tool has no adapter for. A thread handed between providers counts as
 uncovered if any of its providers is.
 
+Each record's agent is the provider driver (``antigravity``, ...) and its
+origin is ``db:<store>#t3code:<instance>``, so both ``--agent antigravity`` and
+the T3 source are visible.
+
 Only named columns of the thread tables are read; the same file holds auth and
 pairing tables. Streaming (unfinished) messages are skipped, so a message is
 indexed once, in its final form.
@@ -25,6 +29,7 @@ indexed once, in its final form.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from pathlib import Path
 from typing import Iterator
@@ -34,7 +39,7 @@ from ..textproc import MIN_CHARS, scrub
 from . import Record
 from ._sqlite import open_readonly
 
-AGENT = "t3code"
+AGENT = "t3code"  # the source; records carry the provider driver as agent
 
 # Provider drivers (and instance-name prefixes) whose threads also live in a
 # store another adapter reads: claude-code, codex, opencode, hermes, grok.
@@ -85,10 +90,14 @@ class T3CodeAdapter:
                 "provider_instance_id FROM orchestration_v2_projection_threads "
                 "WHERE deleted_at IS NULL"):
             pairs = drivers.get(tid) or [(provider, instance)]
-            if all(is_native(d) or is_native(i) for d, i in pairs):
+            uncovered = [(d, i) for d, i in pairs
+                         if not (is_native(d) or is_native(i))]
+            if not uncovered:
                 continue  # a native adapter already indexes this thread
+            driver, inst = uncovered[0]
+            agent = _agent_name(driver or provider)
             cwd = roots.get(project) or ""
-            origin = f"db:{path}#{instance or provider}"
+            origin = f"db:{path}#{AGENT}:{inst or instance or provider}"
             for role, created, payload in db.execute(
                     "SELECT role, created_at, payload_json FROM "
                     "orchestration_v2_projection_messages WHERE thread_id = ? "
@@ -97,9 +106,16 @@ class T3CodeAdapter:
                 text = _text(payload).strip()
                 if len(text) < MIN_CHARS:
                     continue
-                yield Record(agent=AGENT, origin=origin, session_id=tid,
+                yield Record(agent=agent, origin=origin, session_id=tid,
                              cwd=cwd, timestamp=created or "", role=role,
                              text=scrub(text))
+
+
+def _agent_name(driver: str | None) -> str:
+    """The agent a thread is filed under: its provider driver (antigravity,
+    cursor ...), so `--agent antigravity` finds it. The origin keeps `t3code`."""
+    name = re.sub(r"[^a-z0-9._-]", "", (driver or "").lower())
+    return name[:64] or AGENT
 
 
 def _text(payload) -> str:

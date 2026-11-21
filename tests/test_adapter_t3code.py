@@ -66,8 +66,8 @@ def test_native_provider_threads_are_skipped_others_indexed(isolated_env):
     recs = list(T3CodeAdapter().records())
     assert {r.session_id for r in recs} == {"t-agy"}
     assert [r.role for r in recs] == ["user", "assistant"]
-    assert all(r.agent == "t3code" and r.cwd == "/home/me/repos" for r in recs)
-    assert recs[0].origin.endswith("#antigravity")
+    assert all(r.agent == "antigravity" and r.cwd == "/home/me/repos" for r in recs)
+    assert recs[0].origin.endswith("#t3code:antigravity")
 
 
 def test_handed_off_thread_counts_as_uncovered(isolated_env):
@@ -76,7 +76,8 @@ def test_handed_off_thread_counts_as_uncovered(isolated_env):
     db.execute("INSERT INTO orchestration_v2_projection_provider_threads "
                "VALUES ('pt2','t-mix','antigravity','antigravity')")
     add_msg(db, "t-mix", "user", "handed over to another provider")
-    assert len(list(T3CodeAdapter().records())) == 1
+    recs = list(T3CodeAdapter().records())
+    assert len(recs) == 1 and recs[0].agent == "antigravity"
 
 
 def test_streaming_deleted_and_short_messages_skipped(isolated_env):
@@ -89,6 +90,14 @@ def test_streaming_deleted_and_short_messages_skipped(isolated_env):
     add_msg(db, "t-del", "user", "Message in a deleted thread, long enough")
     recs = list(T3CodeAdapter().records())
     assert [r.text for r in recs] == ["A real question that is long enough"]
+
+
+def test_other_uncovered_providers_use_their_driver_as_agent(isolated_env):
+    db = make_db(isolated_env)
+    add_thread(db, "t-cur", "cursor", "cursor_work")
+    add_msg(db, "t-cur", "user", "a question asked through the cursor provider")
+    rec = list(T3CodeAdapter().records())[0]
+    assert rec.agent == "cursor" and rec.origin.endswith("#t3code:cursor_work")
 
 
 def test_unrelated_tables_are_never_read(isolated_env):
