@@ -129,3 +129,16 @@ def test_snapshot_gives_up_if_source_never_settles(isolated_env, monkeypatch):
     monkeypatch.setattr(_sqlite.shutil, "copyfile", always)
     with _sqlite.open_readonly(path) as conn:
         assert conn is None
+
+
+def test_snapshot_metadata_error_skips_the_source(isolated_env, monkeypatch):
+    path = isolated_env / "p.sqlite"
+    _live_db(path)
+    _force_copy(monkeypatch)
+
+    def denied(p):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(_sqlite, "_stamp", denied)
+    with _sqlite.open_readonly(path) as conn:
+        assert conn is None

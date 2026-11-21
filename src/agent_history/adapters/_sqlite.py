@@ -78,24 +78,23 @@ def _snapshot(path: Path, tmp: Path) -> sqlite3.Connection | None:
     """
     names = ("", "-wal", "-shm")
     srcs = [path.with_name(path.name + n) for n in names]
-    if path.with_name(path.name + "-journal").is_file():
-        return None
     copy = tmp / path.name
-    for _ in range(SNAPSHOT_TRIES):
-        before = [_stamp(s) for s in srcs]
-        try:
+    try:
+        if path.with_name(path.name + "-journal").is_file():
+            return None
+        for _ in range(SNAPSHOT_TRIES):
+            before = [_stamp(s) for s in srcs]
             for s, n in zip(srcs, names):
                 dest = copy.with_name(copy.name + n)
                 if s.is_file():
                     shutil.copyfile(s, dest)
                 elif dest.exists():
                     dest.unlink()
-        except OSError:
-            return None
-        if before != [_stamp(s) for s in srcs]:
-            continue
-        try:
+            if before != [_stamp(s) for s in srcs]:
+                continue
             return _connect(copy)
-        except sqlite3.Error:
-            return None
+    except (OSError, sqlite3.Error):
+        # An unreadable store (permissions, metadata or copy failure) is
+        # skipped; a file that is merely absent is handled by _stamp.
+        return None
     return None
