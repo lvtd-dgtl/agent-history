@@ -11,6 +11,21 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+### Added
+- **Grok CLI adapter** (`grok`): reads `~/.grok/sessions/*/*/updates.jsonl`
+  (WSL and Windows homes), joining ACP message chunks into messages. Never
+  opens `auth.json`.
+- **Gemini CLI adapter** (`gemini-cli`): reads `~/.gemini/tmp/*/chats/*.jsonl`,
+  skipping the `<session_context>` scaffolding message.
+- **T3 Code adapter** (`t3code`): reads T3's `statev2.sqlite` thread store, but
+  only threads whose provider has no native adapter (today Antigravity, whose
+  own conversation files are encrypted), so Claude/Codex/Grok/Hermes threads
+  are not indexed twice. Records are filed under the provider driver
+  (`--agent antigravity`); the origin keeps `t3code:<instance>`.
+- Hermes profiles in the Windows home (`C:\Users\<you>\.hermes-t3`) are found
+  from WSL; WAL databases on a Windows drive fall back to a private copy when
+  they cannot be opened read-only in place.
+
 ## [0.19.0] — 2026-11-19
 
 Two read-only commands for checking what the index holds.

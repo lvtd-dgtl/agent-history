@@ -487,18 +487,59 @@ def opencode_db_paths() -> list[Path]:
     return [base / "opencode/opencode.db"]
 
 
-def hermes_state_dbs() -> list[Path]:
+def hermes_state_dbs(_users_dir: Path | None = None) -> list[Path]:
     """Hermes keeps one state.db per profile (~/.hermes, ~/.hermes-<profile>).
 
     Its sessions/ directories hold only a gateway routing index — the
-    transcripts live exclusively in these SQLite files.
+    transcripts live exclusively in these SQLite files. T3 Code runs Hermes
+    with HERMES_HOME=C:\\Users\\<you>\\.hermes-t3, so the Windows profile
+    (seen from WSL) is searched for ``.hermes*`` homes too.
     """
     explicit = _env("AGENT_HISTORY_HERMES_DIRS")
     if explicit:
         homes = [Path(p).expanduser() for p in explicit.split(os.pathsep) if p.strip()]
     else:
         homes = sorted(Path.home().glob(".hermes*"))
+        for win in wsl_windows_homes(_users_dir, marker=".hermes*"):
+            homes += sorted(win.glob(".hermes*"))
     return [home / "state.db" for home in homes if (home / "state.db").is_file()]
+
+
+def grok_session_dirs() -> list[Path]:
+    """Grok CLI session roots: $GROK_HOME or ~/.grok, plus the WSL Windows side.
+
+    Only the sessions/ tree is ever read; auth.json and the rest of the grok
+    home hold credentials and are never opened.
+    """
+    explicit = _env("AGENT_HISTORY_GROK_DIRS")
+    if explicit:
+        return [Path(p).expanduser() for p in explicit.split(os.pathsep) if p.strip()]
+    base = os.environ.get("GROK_HOME", "").strip()
+    dirs = [(Path(base).expanduser() if base else Path.home() / ".grok") / "sessions"]
+    dirs += [home / ".grok/sessions"
+             for home in wsl_windows_homes(marker=".grok/sessions")]
+    return dirs
+
+
+def gemini_cli_dirs() -> list[Path]:
+    """Gemini CLI state roots (~/.gemini/tmp/<project>/chats/*.jsonl)."""
+    explicit = _env("AGENT_HISTORY_GEMINI_DIRS")
+    if explicit:
+        return [Path(p).expanduser() for p in explicit.split(os.pathsep) if p.strip()]
+    dirs = [Path.home() / ".gemini/tmp"]
+    dirs += [home / ".gemini/tmp" for home in wsl_windows_homes(marker=".gemini/tmp")]
+    return dirs
+
+
+def t3_state_dbs() -> list[Path]:
+    """T3 Code's thread stores: ~/.t3/userdata/statev2.sqlite, plus Windows."""
+    explicit = _env("AGENT_HISTORY_T3_DBS")
+    if explicit:
+        return [Path(p).expanduser() for p in explicit.split(os.pathsep) if p.strip()]
+    dbs = [Path.home() / ".t3/userdata/statev2.sqlite"]
+    dbs += [home / ".t3/userdata/statev2.sqlite"
+            for home in wsl_windows_homes(marker=".t3/userdata")]
+    return dbs
 
 
 def openclaw_dirs() -> list[Path]:
