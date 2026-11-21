@@ -19,13 +19,13 @@ from __future__ import annotations
 import datetime
 import json
 import sqlite3
-import urllib.parse
 from pathlib import Path
 from typing import Iterator
 
 from .. import config
 from ..textproc import MIN_CHARS, scrub
 from . import Record
+from ._sqlite import open_readonly
 
 AGENT = "hermes"
 
@@ -45,44 +45,42 @@ class HermesAdapter:
 
     def _read_db(self, path: Path) -> Iterator[Record]:
         profile = path.parent.name  # .hermes-ops, .hermes-family, ...
-        try:
-            # Percent-encode: '#', '?' or '%' in a path would otherwise be
-            # parsed as URI syntax and open the wrong file.
-            db = sqlite3.connect(
-                f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True)
-        except sqlite3.Error:
-            return
-        try:
-            optional = {"cwd", "title"} & _columns(db, "sessions")
-            cols = "id, started_at" + "".join(f", {c}" for c in sorted(optional))
-            sessions: dict[str, str] = {}
-            for row in db.execute(f"SELECT {cols} FROM sessions"):
-                extras = dict(zip(sorted(optional), row[2:]))
-                sessions[row[0]] = extras.get("cwd") or ""
+        with open_readonly(path) as db:
+            if db is None:
+                return
+            try:
+                yield from self._read(db, path, profile)
+            except sqlite3.Error:
+                return
 
-            rows = db.execute(
-                "SELECT session_id, role, content, timestamp FROM messages "
-                "WHERE role IN ('user', 'assistant') AND content IS NOT NULL "
-                "ORDER BY id"
-            )
-            for session_id, role, content, epoch in rows:
-                for text in _texts(content):
-                    text = text.strip()
-                    if len(text) < MIN_CHARS:
-                        continue
-                    yield Record(
-                        agent=AGENT,
-                        origin=f"db:{path}#messages",
-                        session_id=session_id or "",
-                        cwd=sessions.get(session_id) or profile,
-                        timestamp=_iso(epoch),
-                        role=role,
-                        text=scrub(text),
-                    )
-        except sqlite3.Error:
-            return
-        finally:
-            db.close()
+    def _read(self, db: sqlite3.Connection, path: Path,
+              profile: str) -> Iterator[Record]:
+        optional = {"cwd", "title"} & _columns(db, "sessions")
+        cols = "id, started_at" + "".join(f", {c}" for c in sorted(optional))
+        sessions: dict[str, str] = {}
+        for row in db.execute(f"SELECT {cols} FROM sessions"):
+            extras = dict(zip(sorted(optional), row[2:]))
+            sessions[row[0]] = extras.get("cwd") or ""
+
+        rows = db.execute(
+            "SELECT session_id, role, content, timestamp FROM messages "
+            "WHERE role IN ('user', 'assistant') AND content IS NOT NULL "
+            "ORDER BY id"
+        )
+        for session_id, role, content, epoch in rows:
+            for text in _texts(content):
+                text = text.strip()
+                if len(text) < MIN_CHARS:
+                    continue
+                yield Record(
+                    agent=AGENT,
+                    origin=f"db:{path}#messages",
+                    session_id=session_id or "",
+                    cwd=sessions.get(session_id) or profile,
+                    timestamp=_iso(epoch),
+                    role=role,
+                    text=scrub(text),
+                )
 
 
 def _columns(db: sqlite3.Connection, table: str) -> set[str]:
