@@ -135,7 +135,9 @@ def test_tool_listing_follows_the_token_scope(hub):
     assert schema["required"] == ["query"]
     assert set(schema["properties"]) == {"query", "k", "agent", "surface", "cwd",
                                          "machine", "mode", "sort", "notes",
-                                         "since", "until", "recency"}
+                                         "since", "until", "recency", "role",
+                                         "exclude_agent", "subagents", "min_chars",
+                                         "per_session"}
     assert schema["properties"]["notes"]["default"] == "exclude"
     assert write["history_note"].annotations.destructive_hint is False
 

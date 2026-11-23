@@ -232,7 +232,8 @@ def _build_parser() -> argparse.ArgumentParser:
     find.add_argument("query", nargs="+")
     find.add_argument("-k", type=int, default=8, help="results to return (default 8)")
     find.add_argument("--cwd", help="filter by substring of the session's directory")
-    find.add_argument("--agent", help="filter by agent, e.g. claude-code")
+    find.add_argument("--agent", help="filter by agent, e.g. claude-code, or a "
+                                      "comma-separated list: claude-code,codex")
     find.add_argument("--mode", choices=search.MODES, default="hybrid",
                       help="hybrid (default), vector, or text (no Ollama needed)")
     find.add_argument("--sort", choices=search.SORTS, default="relevance",
@@ -246,6 +247,7 @@ def _build_parser() -> argparse.ArgumentParser:
     find.add_argument("--recency", metavar="HALF-LIFE", type=_half_life,
                       help="lean toward recent chunks: relevance x 0.5^(age / "
                            "HALF-LIFE), e.g. 30d (default: off)")
+    _add_filters(find)
     _add_where(find)
     find.add_argument("--full", action="store_true", help="print full chunk text")
     find.add_argument("--json", action="store_true", dest="as_json")
@@ -346,6 +348,7 @@ def _build_parser() -> argparse.ArgumentParser:
     evl.add_argument("--json", action="store_true", dest="as_json")
     evl.add_argument("--details", action="store_true",
                      help="print each query's rank as well")
+    _add_filters(evl)
 
     mcp = sub.add_parser(
         "mcp", help="MCP server for history_recall / history_show / "
@@ -438,6 +441,44 @@ def _add_where(parser: argparse.ArgumentParser) -> None:
                        const="local", help="only this machine's index")
     group.add_argument("--hub", dest="where", action="store_const",
                        const="hub", help="only the hub (AGENT_HISTORY_REMOTE)")
+
+
+def _add_filters(parser: argparse.ArgumentParser) -> None:
+    """Row filters and the per-session cap, shared by search and eval."""
+    parser.add_argument("--exclude-agent", action="append", metavar="AGENT",
+                        help="leave out an agent (repeatable, or comma-separated)")
+    parser.add_argument("--role", action="append", dest="roles", metavar="ROLE",
+                        help="only these roles (repeatable, or comma-separated): "
+                             "user, assistant, memory, doc, title, attachment, "
+                             "instructions, summary, fact")
+    parser.add_argument("--subagents", choices=store.SUBAGENT_MODES, default="include",
+                        help="subagent transcripts: include (default), exclude, "
+                             "or only — their user chunks are a parent's briefs")
+    parser.add_argument("--min-chars", type=_nonnegative, default=0, metavar="N",
+                        help="skip chunks shorter than N characters (one-line "
+                             "prompts, acknowledgements)")
+    parser.add_argument("--per-session", type=_positive, metavar="N",
+                        help="at most N hits from any one conversation")
+
+
+def _positive(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {value}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be at least 1: {value}")
+    return number
+
+
+def _nonnegative(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a number: {value}") from None
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"must not be negative: {value}")
+    return number
 
 
 def _add_time(parser: argparse.ArgumentParser) -> None:
@@ -868,6 +909,11 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                 " ".join(args.query),
                 window=window,
                 recency=half_life,
+                roles=args.roles,
+                exclude_agent=args.exclude_agent,
+                subagents=args.subagents,
+                min_chars=args.min_chars,
+                per_session=args.per_session,
                 k=args.k,
                 cwd=args.cwd,
                 agent=args.agent,
@@ -924,7 +970,12 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             from . import evaluate
             return evaluate.run(args.queries, k=args.k, mode=args.mode,
                                 recency=args.recency, as_json=args.as_json,
-                                details=args.details)
+                                details=args.details,
+                                filters=dict(roles=args.roles,
+                                             exclude_agent=args.exclude_agent,
+                                             subagents=args.subagents,
+                                             min_chars=args.min_chars,
+                                             per_session=args.per_session))
         if args.command == "inject":
             if args.action == "run":
                 return inject.run_hook()

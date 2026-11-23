@@ -102,6 +102,13 @@ PAGE = """<!doctype html>
            style="flex:0 1 7rem">
     <input id="recency" placeholder="half-life" aria-label="recency half-life"
            style="flex:0 1 6rem">
+    <select id="subagents" aria-label="subagent transcripts">
+      <option value="include">with subagents</option>
+      <option value="exclude">no subagents</option>
+      <option value="only">subagents only</option>
+    </select>
+    <input id="per_session" placeholder="per session" aria-label="hits per session"
+           style="flex:0 1 6rem">
     <button>search</button>
   </form>
   <div id="status"></div>
@@ -130,8 +137,9 @@ $('f').addEventListener('submit', async ev => {
                                       sort: $('sort').value, k: '20'});
   if ($('agent').value) params.set('agent', $('agent').value);
   if ($('cwd').value) params.set('cwd', $('cwd').value);
-  for (const name of ['since', 'until', 'recency'])
+  for (const name of ['since', 'until', 'recency', 'per_session'])
     if ($(name).value.trim()) params.set(name, $(name).value.trim());
+  if ($('subagents').value !== 'include') params.set('subagents', $('subagents').value);
   try {
     const res = await fetch('/api/search?' + params);
     if (!res.ok) throw new Error(await res.text());
@@ -239,6 +247,12 @@ class Handler(BaseHTTPRequestHandler):
                     sort=params.get("sort", "relevance"),
                     window=window,
                     recency=half_life,
+                    roles=[params["role"]] if params.get("role") else None,
+                    exclude_agent=([params["exclude_agent"]]
+                                   if params.get("exclude_agent") else None),
+                    subagents=params.get("subagents", "include"),
+                    min_chars=int(params.get("min_chars", "0") or 0),
+                    per_session=int(params["per_session"]) if params.get("per_session") else None,
                 ))
                 for hit in hits:
                     if hit.get("superseded_hint"):

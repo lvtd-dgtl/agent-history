@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections import Counter
 
 import time
 
@@ -60,19 +61,33 @@ def search_rows(
     window: timeaxis.Window | None = None,
     recency: float | None = None,
     include_facts: bool = True,
+    roles: list[str] | None = None,
+    exclude_agent: list[str] | None = None,
+    subagents: str = "include",
+    min_chars: int = 0,
+    per_session: int | None = None,
 ) -> list[dict]:
     """Run one search and return result dicts — shared by the CLI and viewer.
 
     ``window`` narrows to a time range; ``recency`` is a half-life in seconds
     (None: off). Matching curated facts lead the list unless
     ``include_facts`` is False; ``agent="fact"`` returns facts alone.
+    ``agent`` may be a comma-separated list; ``exclude_agent``, ``roles``,
+    ``subagents`` and ``min_chars`` narrow further, and ``per_session`` keeps
+    at most that many hits from any one conversation.
     """
     window = window or timeaxis.Window()
+    filters = make_filters(roles=roles, exclude_agent=exclude_agent,
+                           subagents=subagents, min_chars=min_chars)
+    agents = store.agent_set(agent)
+    wants_facts = (include_facts and (not agents or facts.AGENT in agents)
+                   and facts.AGENT not in filters.exclude_agents
+                   and (not filters.roles or facts.ROLE in filters.roles)
+                   and filters.subagents != "only")
     fact_hits = (_fact_hits(query, k=k, cwd=cwd, machine=machine,
                             exclude_machine=exclude_machine, window=window,
-                            sort=sort)
-                 if include_facts and agent in (None, facts.AGENT) else [])
-    if agent == facts.AGENT:
+                            sort=sort) if wants_facts else [])
+    if agents == {facts.AGENT}:
         return fact_hits[:k]
     if fact_hits and not config.db_path().exists():
         # Facts live beside the index, not in it; before the first
@@ -81,14 +96,17 @@ def search_rows(
         print("note: no transcript index yet; showing curated facts only",
               file=sys.stderr)
         return fact_hits[:k]
+    if agents:
+        agent = ",".join(sorted(agents - {facts.AGENT}))
 
     db = store.open_for_read(check_model=(mode != "text"))
     narrowing = {"cwd": cwd, "agent": agent, "machine": machine,
-                 "exclude_machine": exclude_machine, "window": window}
+                 "exclude_machine": exclude_machine, "window": window,
+                 "filters": filters}
     reweigh = recency is not None and sort == "relevance"
     want = k
-    if reweigh:
-        k = max(k * 4, 40)  # a recent hit can only win if it was fetched
+    if reweigh or per_session:
+        k = max(k * 4, 40)  # a recent hit, or a fifth session, must be fetched to win
 
     if mode == "text":
         rows = [(*r, None, None) for r in store.text_query(db, query, k, **narrowing)]
@@ -116,8 +134,43 @@ def search_rows(
     if reweigh:
         anchor = window.until if window.until is not None else time.time()
         results = apply_recency(results, recency, anchor)
+    if per_session:
+        results = cap_per_session(results, per_session)
     # Facts ride above the k transcript hits rather than taking their places.
     return fact_hits + results[:want]
+
+
+def make_filters(*, roles: list[str] | None = None,
+                 exclude_agent: list[str] | None = None,
+                 subagents: str = "include", min_chars: int = 0) -> store.Filters:
+    """store.Filters from option values; list options also take commas."""
+    def names(values):
+        return frozenset(v.strip() for value in values or () for v in value.split(",")
+                         if v.strip())
+    if subagents not in store.SUBAGENT_MODES:
+        raise ValueError(f"subagents must be one of {', '.join(store.SUBAGENT_MODES)}")
+    return store.Filters(exclude_agents=names(exclude_agent), roles=names(roles),
+                         subagents=subagents, min_chars=max(0, int(min_chars or 0)))
+
+
+def _session_key(result: dict) -> tuple:
+    return (result.get("tenant") or "", result.get("machine") or "",
+            result.get("session_uid") or result.get("session_id") or result.get("file") or "")
+
+
+def cap_per_session(results: list[dict], n: int) -> list[dict]:
+    """Keep at most ``n`` hits per conversation, in order; facts are exempt.
+    One long session otherwise takes most of a result list."""
+    seen: Counter = Counter()
+    out = []
+    for result in results:
+        if result.get("role") != facts.ROLE:
+            key = _session_key(result)
+            if seen[key] >= n:
+                continue
+            seen[key] += 1
+        out.append(result)
+    return out
 
 
 def _fact_hits(query: str, *, k: int, cwd: str | None, machine: str | None,
@@ -234,6 +287,11 @@ def run(
     tenant: str | None = None,
     window: timeaxis.Window | None = None,
     recency: float | None = None,
+    roles: list[str] | None = None,
+    exclude_agent: list[str] | None = None,
+    subagents: str = "include",
+    min_chars: int = 0,
+    per_session: int | None = None,
 ) -> int:
     """``where`` is None (decide), "local", or "hub"."""
     side = _side(where, machine)
@@ -245,7 +303,9 @@ def run(
         return 1
     options = dict(k=k, cwd=cwd, agent=agent, machine=machine,
                    exclude_machine=exclude_machine, mode=mode, sort=sort,
-                   window=window or timeaxis.Window(), recency=recency)
+                   window=window or timeaxis.Window(), recency=recency,
+                   roles=roles, exclude_agent=exclude_agent, subagents=subagents,
+                   min_chars=min_chars, per_session=per_session)
 
     if side == "hub":
         return remote.passthrough(remote.search_args(
@@ -316,7 +376,7 @@ def _merge_hub(query: str, local: list[dict], *, full: bool, k: int,
         return local
 
     return fuse([local, [_with_profile({**_HUB_DEFAULTS, **r}) for r in hub]],
-                sort=sort, k=k)
+                sort=sort, k=k, per_session=options.get("per_session"))
 
 
 def _with_profile(result: dict) -> dict:
@@ -328,7 +388,8 @@ def _with_profile(result: dict) -> dict:
     return result
 
 
-def fuse(lists: list[list[dict]], *, sort: str, k: int) -> list[dict]:
+def fuse(lists: list[list[dict]], *, sort: str, k: int,
+         per_session: int | None = None) -> list[dict]:
     """Interleave independently ranked result lists by reciprocal-rank
     fusion: each hit scores 1/(60+rank) in its own list, equal ranks fall to
     the newer chunk, and repeats are dropped."""
@@ -344,6 +405,8 @@ def fuse(lists: list[list[dict]], *, sort: str, k: int) -> list[dict]:
                 fused.append(result)
     fused = facts.reconcile(fused)
     ordered = _order(fused, sort)
+    if per_session:
+        ordered = cap_per_session(ordered, per_session)
     # Curated facts lead, above the k transcript hits, as in each list alone.
     return ([r for r in ordered if r.get("role") == facts.ROLE]
             + [r for r in ordered if r.get("role") != facts.ROLE][:k])

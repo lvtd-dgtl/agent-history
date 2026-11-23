@@ -186,8 +186,18 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
            cwd: str | None = None, machine: str | None = None,
            mode: str = "hybrid", sort: str = "relevance",
            notes: str = "exclude", since: str | None = None,
-           until: str | None = None, recency: str | None = None) -> dict:
+           until: str | None = None, recency: str | None = None,
+           role: list[str] | None = None, exclude_agent: list[str] | None = None,
+           subagents: str = "include", min_chars: int = 0,
+           per_session: int | None = None) -> dict:
     identity = _require(identity, "read")
+    if subagents not in store.SUBAGENT_MODES:
+        raise ToolFailure(f"subagents must be one of {', '.join(store.SUBAGENT_MODES)}")
+    if per_session is not None and int(per_session) < 1:
+        raise ToolFailure("per_session must be at least 1")
+    narrowing = dict(roles=role or None, exclude_agent=exclude_agent or None,
+                     subagents=subagents, min_chars=max(0, int(min_chars or 0)),
+                     per_session=int(per_session) if per_session else None)
     try:
         window, half_life = search.time_options(since or None, until or None,
                                                 None, recency or None)
@@ -213,8 +223,14 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
     wanted = agent or surface
     with _tenant_index(identity.tenant):
         # history_record entries live in the notes store now (piece D). The
-        # default recall still returns them, in the shape they always had.
-        if notes == "exclude" and (not wanted or wanted == SURFACE):
+        # default recall still returns them, in the shape they always had —
+        # unless a role or subagent filter rules a record out.
+        records_fit = ((not role or RECORD_ROLE in search.make_filters(roles=role).roles)
+                       and subagents != "only"
+                       and SURFACE not in search.make_filters(
+                           exclude_agent=exclude_agent).exclude_agents)
+        if (notes == "exclude" and records_fit
+                and (not wanted or SURFACE in store.agent_set(wanted))):
             try:
                 record_hits = notes_store.search(query, k=k, mode=mode, records=True,
                                                  cwd=cwd or None, machine=machine or None,
@@ -234,14 +250,16 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             # No transcript index for this tenant yet; curated facts still answer.
             wanted_agent = (agent or surface) or None
             rows = (search.search_rows(query, k=k, agent=facts.AGENT, window=window,
-                                       cwd=cwd or None, machine=machine or None)
-                    if wanted_agent in (None, facts.AGENT) and sort == "relevance" else [])
+                                       cwd=cwd or None, machine=machine or None,
+                                       **narrowing)
+                    if (not wanted_agent or facts.AGENT in store.agent_set(wanted_agent))
+                    and sort == "relevance" else [])
         else:
             try:
                 rows = search.search_rows(
                     query, k=k, cwd=cwd or None, agent=(agent or surface) or None,
                     machine=machine or None, mode=mode, sort=sort,
-                    window=window, recency=half_life)
+                    window=window, recency=half_life, **narrowing)
             except store.StoreError as exc:
                 raise ToolFailure(str(exc)) from None
             except embed.EmbedError as exc:
@@ -283,6 +301,15 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
         })
     if notes == "exclude":
         merged = _merge_records(results, record_hits, k)
+        if narrowing["per_session"]:
+            # Records of one chat share a session; cap them with the rest.
+            seen: Counter = Counter()
+            capped = []
+            for hit in merged:
+                seen[hit.get("session") or hit.get("session_id")] += 1
+                if seen[hit.get("session") or hit.get("session_id")] <= narrowing["per_session"]:
+                    capped.append(hit)
+            merged = [{**hit, "rank": rank} for rank, hit in enumerate(capped, 1)]
         return {"query": query, "mode": mode, "count": len(merged),
                 "results": merged}
     # Notes first (a note is a pointer to read), then transcript hits.
