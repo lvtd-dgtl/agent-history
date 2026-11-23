@@ -160,3 +160,15 @@ def test_purge_reaches_one_tenant_only(tmp_path, monkeypatch, fake_embed, capsys
     assert cli.main(["purge", "--tenant", "../etc", "--all"]) == 1
     assert cli.main(["purge", "--tenant", "nobody", "--all"]) == 1
     capsys.readouterr()
+
+
+@needs_vec
+def test_eval_scores_transcripts_not_facts(indexed, tmp_path, capsys):
+    from agent_history import facts
+
+    facts.save(facts.build("auth middleware", "split reason", "a curated answer"))
+    path = write(tmp_path, ['{"query": "why did we split the auth middleware", '
+                            '"expect": "session refresh"}'])
+    assert cli.main(["eval", path, "--mode", "text", "--json"]) == 0
+    (result,) = json.loads(capsys.readouterr().out)["results"]
+    assert result["ranks"] == [1], "a matching fact must not push the answer down"

@@ -129,8 +129,11 @@ def evaluate(queries: list[dict], *, k: int, mode: str,
     errors = 0
     for q in queries:
         try:
+            # Curated facts would take the top ranks whenever one matches;
+            # this scores retrieval over the transcript index.
             hits = search.search_rows(q["query"], k=k, cwd=q["cwd"], agent=q["agent"],
-                                      mode=mode, window=q["window"], recency=recency)
+                                      mode=mode, window=q["window"], recency=recency,
+                                      include_facts=False)
         except embed.EmbedError:
             errors += 1
             ranks.append(None)

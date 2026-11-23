@@ -223,8 +223,13 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             except embed.EmbedError as exc:
                 raise ToolFailure(f"embedding unavailable ({exc}); "
                                   "retry with mode='text'") from None
-        if notes == "only" or not config.db_path().exists():
+        if notes == "only":
             rows: list[dict] = []
+        elif not config.db_path().exists():
+            # No transcript index for this tenant yet; curated facts still answer.
+            wanted_agent = (agent or surface) or None
+            rows = (search.search_rows(query, k=k, agent=facts.AGENT, window=window)
+                    if wanted_agent in (None, facts.AGENT) and sort == "relevance" else [])
         else:
             try:
                 rows = search.search_rows(

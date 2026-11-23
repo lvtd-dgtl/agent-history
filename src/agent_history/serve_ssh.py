@@ -118,8 +118,13 @@ def _search(args, scope: list[str]) -> int:
     for tenant in scope:
         with config.tenant_home(tenant):
             if not config.db_path().exists():
-                continue  # nothing shipped for this tenant yet
-            rows = search.search_rows(" ".join(args.query), **options)
+                # No transcripts shipped yet; its curated facts still answer.
+                if options["agent"] not in (None, facts.AGENT):
+                    continue
+                rows = search.search_rows(" ".join(args.query),
+                                          **{**options, "agent": facts.AGENT})
+            else:
+                rows = search.search_rows(" ".join(args.query), **options)
         lists.append([{**row, "tenant": tenant} for row in rows])
     results = (lists[0] if len(lists) == 1
                else search.fuse(lists, sort=args.sort, k=args.k))

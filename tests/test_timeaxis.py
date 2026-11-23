@@ -108,3 +108,15 @@ def test_decay_halves_each_half_life():
     assert timeaxis.decay(60 * day, 30 * day) == pytest.approx(0.25)
     assert timeaxis.decay(-5 * day, 30 * day) == 1.0, "the future counts as now"
     assert timeaxis.decay(float("inf"), 30 * day) == 0.0, "an undated chunk weighs nothing"
+
+
+@pytest.mark.parametrize("text", ["9999-12-31", "9999-12-31T23:59:59"])
+def test_dates_at_the_edge_of_time_fail_cleanly(text):
+    with pytest.raises(timeaxis.TimeError, match="out of range"):
+        timeaxis.parse_bound(text, end=True)
+
+
+def test_extreme_stored_timestamps_do_not_raise():
+    for value in ("0001-01-01T00:00:00", "9999-12-31T23:59:59"):
+        assert isinstance(timeaxis.instant(value), float)
+        assert isinstance(timeaxis.local(value), str)

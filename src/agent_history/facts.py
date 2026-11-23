@@ -202,6 +202,9 @@ def open_store(write: bool) -> sqlite3.Connection | None:
     db = sqlite3.connect(path) if write else sqlite3.connect(
         f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True)
     if write:
+        # Deleted rows are overwritten, not left in free pages: `fact forget`
+        # is how a credential stored as a fact is removed.
+        db.execute("PRAGMA secure_delete = ON")
         db.executescript(_SCHEMA)
         if created:
             config.secure_file(path)
@@ -266,15 +269,31 @@ def _order_key(fact: dict) -> tuple:
             fact.get("fact_id") or "")
 
 
-def chains(facts: list[dict]) -> dict[tuple[str, str], list[dict]]:
-    """Rows grouped by (subject, predicate), oldest first, duplicates of one
-    fact id (a local copy and the hub's) collapsed."""
+def _grouping(items: list[dict]):
+    """The key a fact is grouped by. Facts from different hub tenants are
+    different facts, so when rows span more than one tenant the tenant is
+    part of the key; rows with no tenant label (this machine's) then stand
+    apart. With one tenant or none, this machine's rows and the hub's are one
+    history."""
+    multi = len({f.get("tenant") for f in items if f.get("tenant")}) > 1
+
+    def group(fact: dict) -> tuple:
+        base = (key(fact["subject"]), key(fact["predicate"]))
+        return ((fact.get("tenant") or ""), *base) if multi else base
+    return group
+
+
+def chains(facts: list[dict]) -> dict[tuple, list[dict]]:
+    """Rows grouped by (subject, predicate) — and tenant, when they span
+    several — oldest first, duplicates of one fact id (a local copy and the
+    hub's) collapsed."""
     seen: dict[str, dict] = {}
     for fact in facts:
         seen.setdefault(fact["fact_id"], fact)
-    grouped: dict[tuple[str, str], list[dict]] = {}
+    group = _grouping(list(seen.values()))
+    grouped: dict[tuple, list[dict]] = {}
     for fact in seen.values():
-        grouped.setdefault((key(fact["subject"]), key(fact["predicate"])), []).append(fact)
+        grouped.setdefault(group(fact), []).append(fact)
     for chain in grouped.values():
         chain.sort(key=_order_key)
     return grouped
@@ -346,21 +365,37 @@ def match_score(fact: dict, query_terms: set[str], *, strict: bool = False) -> f
     return s_hit + 0.5 * p_hit
 
 
+def _norm(path: str | None) -> str:
+    return (path or "").replace("\\", "/").rstrip("/")
+
+
 def in_scope(fact: dict, cwd: str | None) -> bool:
-    """A fact with a scope applies inside that directory tree only."""
-    scope = (fact.get("scope") or "").rstrip("/")
+    """A fact with a scope applies inside that directory tree only. Windows
+    separators compare like POSIX ones."""
+    scope = _norm(fact.get("scope"))
     if not scope:
         return True
-    here = (cwd or "").rstrip("/")
+    here = _norm(cwd)
     return bool(here) and (here == scope or here.startswith(scope + "/"))
+
+
+def scope_path(scope: str | None) -> str | None:
+    """A ``--scope`` typed on this machine, as an absolute path (``.`` and
+    ``~`` resolved), so it compares with the working directories hooks see."""
+    if not scope or not scope.strip():
+        return None
+    return str(Path(scope.strip()).expanduser().resolve())
 
 
 def matching(query: str, *, as_of: float | None = None, cwd: str | None = None,
              strict: bool = False, limit: int = SEARCH_LIMIT,
              facts: list[dict] | None = None,
-             scoped_only: bool = False) -> list[tuple[float, dict]]:
-    """Current facts the query names, best first. ``scoped_only`` keeps only
-    facts bound to ``cwd`` (strict mode's injection)."""
+             scoped_only: bool = False,
+             any_scope: bool = False) -> list[tuple[float, dict]]:
+    """Current facts the query names, best first. A scoped fact counts only
+    when ``cwd`` is inside its scope, unless ``any_scope`` (a deliberate
+    search shows every fact, labelled with its scope); ``scoped_only`` keeps
+    only facts bound to ``cwd`` (strict mode's injection)."""
     terms = _terms(query)
     if not terms:
         return []
@@ -369,7 +404,7 @@ def matching(query: str, *, as_of: float | None = None, cwd: str | None = None,
     for fact in pool:
         if scoped_only and not fact.get("scope"):
             continue
-        if fact.get("scope") and not in_scope(fact, cwd):
+        if fact.get("scope") and not any_scope and not in_scope(fact, cwd):
             continue
         score = match_score(fact, terms, strict=strict)
         if score > 0:
@@ -411,11 +446,14 @@ def reconcile(hits: list[dict]) -> list[dict]:
     predicate, later ``valid_from`` (a local and a hub copy of one fact, or a
     stale local value the hub has since seen changed)."""
     best: dict[tuple, dict] = {}
+    labelled = [{**h["fact"], "tenant": h.get("tenant")} for h in hits
+                if h.get("role") == ROLE and h.get("fact")]
+    group = _grouping(labelled)
     for hit in hits:
         fact = hit.get("fact")
         if hit.get("role") != ROLE or not fact:
             continue
-        k = (key(fact["subject"]), key(fact["predicate"]))
+        k = group({**fact, "tenant": hit.get("tenant")})
         if k not in best or _order_key(fact) > _order_key(best[k]["fact"]):
             best[k] = hit
     keep = {id(h) for h in best.values()}
@@ -450,10 +488,13 @@ def write_file(directory: Path, fact: dict) -> Path:
 
 def save(fact: dict) -> str:
     """Keep a fact on this machine and, when a hub is configured, queue its
-    redacted copy for the hub and ship the queue. Returns where it went."""
+    redacted copy for the hub and ship the queue. Returns where it went.
+    With local redaction on (``AGENT_HISTORY_REDACT``, or strict mode) this
+    machine keeps the redacted copy too, as the index does."""
     db = open_store(write=True)
     try:
-        insert(db, fact, config.machine_id())
+        insert(db, redacted(fact) if config.redact_enabled() else fact,
+               config.machine_id())
         db.commit()
     finally:
         db.close()
@@ -488,8 +529,10 @@ def ship_outbox() -> int:
 
 
 def forget(subject: str, predicate: str | None = None) -> int:
-    """Permanently delete every row of a subject (and predicate) here.
-    Returns how many rows went. A hub's copies are the hub's to delete."""
+    """Permanently delete every row of a subject (and predicate) here,
+    including copies still queued for the hub. Returns how many rows went.
+    Copies the hub already has are the hub's to delete."""
+    _forget_queued(subject, predicate)
     db = open_store(write=False)
     if db is None:
         return 0
@@ -505,6 +548,24 @@ def forget(subject: str, predicate: str | None = None) -> int:
         return cursor.rowcount
     finally:
         db.close()
+
+
+def _forget_queued(subject: str, predicate: str | None) -> int:
+    """Delete outbox files for this subject (and predicate) before they ship."""
+    directory = outbox_dir()
+    if not directory.is_dir():
+        return 0
+    gone = 0
+    for path in directory.glob("*.jsonl"):
+        try:
+            fact = parse(path.read_text(encoding="utf-8").strip())
+        except OSError:
+            continue
+        if (fact and key(fact["subject"]) == key(subject)
+                and (not predicate or key(fact["predicate"]) == key(predicate))):
+            path.unlink(missing_ok=True)
+            gone += 1
+    return gone
 
 
 # ----------------------------------------------------------------- hub side
@@ -650,7 +711,7 @@ def run(args) -> int:
             fact = build(args.subject, args.predicate,
                          args.value if action == "set" else None,
                          since=args.since, source=args.source,
-                         scope=getattr(args, "scope", None))
+                         scope=scope_path(getattr(args, "scope", None)))
             where = save(fact)
             verb = "set" if action == "set" else "retired"
             print(f"{verb} {fact['subject']} · {fact['predicate']}"

@@ -365,3 +365,97 @@ def test_get_merges_this_machine_and_the_hub(monkeypatch, capsys):
     cap = capsys.readouterr()
     assert json.loads(cap.out)[0]["value"] == "local-old"
     assert "hub unavailable" in cap.err
+
+
+# --- review fixes ---------------------------------------------------------------
+
+@needs_vec
+def test_scoped_facts_show_in_search_with_their_scope(indexed, tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.chdir(repo)
+    assert fact_cli("set", "repo-build", "command", "make release", "--scope", ".") == 0
+    capsys.readouterr()
+    (row,) = facts.rows("repo-build")
+    assert row["scope"] == str(repo.resolve()), "--scope . is stored as an absolute path"
+    assert search.search_rows("repo-build command", mode="text")[0]["role"] == "fact"
+    narrowed = search.search_rows("repo-build command", mode="text", cwd="repo")
+    assert narrowed[0]["role"] == "fact"
+    elsewhere = search.search_rows("repo-build command", mode="text", cwd="other-project")
+    assert all(r["role"] != "fact" for r in elsewhere)
+
+
+def test_windows_scopes_compare_like_posix_ones():
+    fact = {"scope": "C:\\Users\\me\\proj"}
+    assert facts.in_scope(fact, "C:\\Users\\me\\proj\\sub")
+    assert not facts.in_scope(fact, "C:\\Users\\me\\project")
+
+
+def _row(fid, value, since, tenant=None):
+    row = {"fact_id": "fact-" + fid * 20, "subject": "db", "predicate": "host",
+           "value": value, "valid_from": since, "created_at": since}
+    if tenant:
+        row["tenant"] = tenant
+    return row
+
+
+def test_tenants_keep_separate_histories():
+    rows = [_row("a", "X", "2026-01-01T00:00:00+00:00", "a"),
+            _row("b", "Y", "2026-06-01T00:00:00+00:00", "b")]
+    assert sorted(f["value"] for f in facts.current(rows)) == ["X", "Y"]
+    hits = [{**facts.as_hit(r), "tenant": r["tenant"]} for r in rows]
+    assert len(facts.reconcile(hits)) == 2
+
+
+def test_one_tenant_and_this_machine_are_one_history():
+    rows = [_row("a", "old-local", "2026-01-01T00:00:00+00:00"),
+            _row("b", "new-hub", "2026-06-01T00:00:00+00:00", "kim")]
+    assert [f["value"] for f in facts.current(rows)] == ["new-hub"]
+
+
+def test_forget_also_drops_copies_still_queued(monkeypatch, capsys):
+    from agent_history import ship
+
+    monkeypatch.setattr(ship, "upload", lambda *a: False)
+    monkeypatch.setenv("AGENT_HISTORY_HUB_INGEST", "ahub@hub.example.invalid:")
+    fact_cli("set", "secret-box", "password", "hunter2")
+    fact_cli("set", "other-box", "password", "keep-me")
+    assert len(list(facts.outbox_dir().glob("*.jsonl"))) == 2
+    assert fact_cli("forget", "secret-box", "--yes") == 0
+    (left,) = facts.outbox_dir().glob("*.jsonl")
+    assert "other-box" in left.read_text()
+    capsys.readouterr()
+    db = facts.open_store(write=True)
+    assert db.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    db.close()
+
+
+def test_local_redaction_applies_to_facts_too(monkeypatch, capsys):
+    monkeypatch.setenv("AGENT_HISTORY_REDACT", "on")
+    fact_cli("set", "ci", "token", GH)
+    capsys.readouterr()
+    assert GH not in facts.rows("ci")[0]["value"]
+
+
+@needs_vec
+def test_injected_facts_are_capped(indexed, monkeypatch, capsys):
+    monkeypatch.setenv("AGENT_HISTORY_INJECT", "1")
+    fact_cli("set", "lvtd-fleet-1", "ssh notes", "x" * 1900)
+    capsys.readouterr()
+    payload = io.StringIO(json.dumps({"session_id": "now", "cwd": "/w",
+                                      "prompt": "ssh notes for lvtd-fleet-1"}))
+    assert inject.run_hook(payload) == 0
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert len(context) <= inject.MAX_TOTAL_CHARS
+    assert "x" * (inject.FACT_CHARS + 10) not in context
+
+
+@needs_vec
+def test_a_facts_only_tenant_still_answers_search(tmp_path, monkeypatch, fake_embed, capsys):
+    monkeypatch.setenv("AGENT_HISTORY_TENANTS", str(tmp_path / "tenants"))
+    with config.tenant_home("kim"):
+        facts.save(facts.build("gateway", "host", "kim-host"))
+    capsys.readouterr()
+    assert serve_ssh.run("kim", "search --json -- gateway host") == 0
+    (row,) = json.loads(capsys.readouterr().out)
+    assert row["role"] == "fact" and "kim-host" in row["text"]

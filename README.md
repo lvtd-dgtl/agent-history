@@ -342,11 +342,17 @@ $ agent-history fact forget lvtd-fleet-1 --yes   # delete its rows on this machi
   hits; `--as-of` returns the fact as it was then, and `--agent fact` lists
   facts alone. Context injection, stricter (the whole subject), puts current
   facts ahead of excerpts and marks an excerpt that predates one. A fact can
-  be `--scope`d to a project directory; strict mode injects only those.
+  be `--scope`d to a project directory (`--scope .` is stored as an absolute
+  path): injection then uses it only inside that tree, strict mode injects
+  only scoped facts, and search shows it with its scope (with `--cwd`, when
+  the scope contains that substring). Injected facts are capped at 300
+  characters each and count toward injection's size limit.
 - **Beside the index, never in it.** Facts live in `facts.db`, written only
   by `fact set`/`retire` or the `history_fact` MCP tool. Nothing reads
   transcripts to propose facts (a possible later, opt-in phase of #40).
-- **Raw here, redacted when shipped.** With `AGENT_HISTORY_HUB_INGEST` set, a
+- **Raw here, redacted when shipped.** This machine keeps a fact as written
+  (redacted too when `AGENT_HISTORY_REDACT` or strict mode is on, as for the
+  index). With `AGENT_HISTORY_HUB_INGEST` set, a
   fact's redacted copy is queued for the hub (`inbox/<tenant>/<machine>/facts/`,
   beside session notes) and sent at once, or on the next `fact ship` or
   hook run if the hub is unreachable; the hub redacts again. `fact get` and
@@ -1398,8 +1404,11 @@ The posture that follows:
   think twice before a synced or cloud-mounted `AGENT_HISTORY_HOME`; there is
   no encryption at rest — full-disk encryption is the answer.
 - **Facts follow the same rule.** `facts.db` (`0600`) keeps values as you
-  wrote them — often a host or a credential — and what is shipped to a hub
-  is redacted, twice. `fact forget` deletes rows permanently.
+  wrote them — often a host or a credential — unless local redaction is on,
+  and what is shipped to a hub is redacted, twice. `fact forget` deletes the
+  rows (SQLite `secure_delete`, so they do not linger in free pages) and any
+  copy still queued for the hub; a copy the hub already holds is deleted
+  there.
 - **Encryption at rest is the disk's job.** Neither `index.db`, `notes.db`
   nor `facts.db` is encrypted by the tool. On a laptop that means full-disk
   encryption; on a hub holding other people's history it means an encrypted

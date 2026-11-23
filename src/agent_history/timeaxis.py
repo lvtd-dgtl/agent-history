@@ -44,11 +44,11 @@ def instant(timestamp: str | None) -> float:
         return float("-inf")
     try:
         parsed = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    except ValueError:
+        if parsed.tzinfo is None:
+            parsed = parsed.astimezone()
+        return parsed.timestamp()
+    except (ValueError, OverflowError, OSError):
         return float("-inf")
-    if parsed.tzinfo is None:
-        parsed = parsed.astimezone()
-    return parsed.timestamp()
 
 
 def iso(epoch: float) -> str:
@@ -63,7 +63,10 @@ def local(timestamp: str | None, length: int = 16) -> str:
     when = instant(timestamp)
     if when == float("-inf"):
         return (timestamp or "")[:length]
-    return datetime.datetime.fromtimestamp(when).strftime("%Y-%m-%d %H:%M")[:length]
+    try:
+        return datetime.datetime.fromtimestamp(when).strftime("%Y-%m-%d %H:%M")[:length]
+    except (ValueError, OverflowError, OSError):
+        return (timestamp or "")[:length]
 
 
 def _span(text: str) -> float | None:
@@ -87,6 +90,15 @@ def parse_span(text: str) -> float:
 def parse_bound(text: str, *, end: bool, now: float | None = None) -> float:
     """Epoch for one side of a window. ``end`` makes a bare date cover its
     whole day (an upper bound); otherwise it starts at local midnight."""
+    try:
+        return _parse_bound(text, end=end, now=now)
+    except TimeError:
+        raise
+    except (ValueError, OverflowError, OSError) as exc:  # year 9999 + 1 day,
+        raise TimeError(f"date out of range: {text!r}") from exc  # pre-1970 on Windows
+
+
+def _parse_bound(text: str, *, end: bool, now: float | None) -> float:
     now = time.time() if now is None else now
     raw = (text or "").strip()
     if not raw:

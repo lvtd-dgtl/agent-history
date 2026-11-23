@@ -43,6 +43,7 @@ MAX_CHUNKS = 3
 CHUNK_CHARS = 700
 SNIPPET_CHARS = 70  # per-memory preview length in the user-visible notice
 MAX_TOTAL_CHARS = 2200
+FACT_CHARS = 300   # per injected fact line; facts count toward the total
 EMBED_TIMEOUT = 3
 
 # Prompts that are conversation steering, not questions worth retrieving for.
@@ -270,7 +271,10 @@ def _render(rows: list[tuple], cwd: str | None = None, *,
     if facts_in_force:
         lines = ["\nCurrent facts, curated by the user — the value in force now. "
                  "Where an excerpt below disagrees, the fact wins:"]
-        lines += [f"- {facts.line(f)}" for f in facts_in_force]
+        for fact in facts_in_force:
+            text = " ".join(facts.line(fact).split())
+            lines.append("- " + (text if len(text) <= FACT_CHARS
+                                 else text[:FACT_CHARS - 1] + "…"))
         parts.append("\n".join(lines) + "\n")
     total = sum(len(p) for p in parts)
     hints = hints or {}

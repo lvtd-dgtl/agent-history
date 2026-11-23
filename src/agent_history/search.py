@@ -136,14 +136,13 @@ def _fact_hits(query: str, *, k: int, cwd: str | None, machine: str | None,
     if exclude_machine:
         skip = set(exclude_machine)
         pool = [f for f in pool if (f.get("machine") or local) not in skip]
+    if cwd:
+        # --cwd is a substring of a directory, as for chunks: global facts
+        # stay, scoped ones must have it in their scope.
+        pool = [f for f in pool if not f.get("scope") or cwd in f["scope"]]
     found = facts.matching(query, as_of=window.until, facts=pool,
-                           limit=min(k, facts.SEARCH_LIMIT), cwd=None)
-    hits = []
-    for _score, fact in found:
-        if cwd and fact.get("scope") and cwd not in fact["scope"]:
-            continue
-        hits.append(facts.as_hit(fact))
-    return hits
+                           limit=min(k, facts.SEARCH_LIMIT), any_scope=True)
+    return [facts.as_hit(fact) for _score, fact in found]
 
 
 def apply_recency(results: list[dict], half_life: float, anchor: float) -> list[dict]:
