@@ -60,6 +60,8 @@ they have no corresponding tags.
   they cannot be opened read-only in place.
 
 ### Changed
+- `fact` and `eval` are subcommands now, so a bare query starting with
+  either word (`agent-history fact check auth`) needs `search` or quotes.
 - The README names the cost of verbatim recall — stale statements come back
   too — and what the time axis does and does not do about it (#14).
 
