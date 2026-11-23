@@ -63,8 +63,15 @@ def ssh_argv(command: list[str]) -> list[str]:
 def search_args(query: str, *, k: int, cwd: str | None, agent: str | None,
                 machine: str | None, exclude_machine: list[str] | None,
                 mode: str, sort: str, full: bool, as_json: bool,
-                tenant: str | None = None) -> list[str]:
-    """The ``search`` command line to run on the hub for these options."""
+                tenant: str | None = None, window=None,
+                recency: float | None = None) -> list[str]:
+    """The ``search`` command line to run on the hub for these options.
+
+    A time window travels as absolute UTC instants and a half-life in hours,
+    so the hub reads exactly what this machine meant whatever its clock zone.
+    The flags are sent only when set, so a hub too old to know them still
+    answers every search that does not use them.
+    """
     out = ["search", "-k", str(k), "--mode", mode, "--sort", sort]
     for flag, value in (("--cwd", cwd), ("--agent", agent),
                         ("--machine", machine), ("--tenant", tenant)):
@@ -72,6 +79,10 @@ def search_args(query: str, *, k: int, cwd: str | None, agent: str | None,
             out += [flag, value]
     for name in exclude_machine or ():
         out += ["--exclude-machine", name]
+    if window:
+        out += window.args()
+    if recency is not None:
+        out += ["--recency", f"{recency / 3600:g}h"]
     if full:
         out.append("--full")
     if as_json:
@@ -109,8 +120,9 @@ def passthrough(command: list[str]) -> int:
         return 1
 
 
-def query_json(command: list[str]) -> list[dict]:
-    """Run a ``--json`` command on the hub and return the parsed list.
+def query_json(command: list[str], require: str = "text") -> list[dict]:
+    """Run a ``--json`` command on the hub and return the parsed list of
+    objects that carry the ``require`` field.
 
     Raises RemoteError for anything short of a clean answer, so callers can
     fail open with one line rather than a traceback.
@@ -134,4 +146,4 @@ def query_json(command: list[str]) -> list[dict]:
         raise RemoteError("unreadable answer") from exc
     if not isinstance(data, list):
         raise RemoteError("unexpected answer")
-    return [row for row in data if isinstance(row, dict) and "text" in row]
+    return [row for row in data if isinstance(row, dict) and require in row]

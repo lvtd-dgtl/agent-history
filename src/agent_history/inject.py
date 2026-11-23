@@ -19,6 +19,11 @@ user asked for, so everything here leans toward precision:
   score either, and injecting keyword noise would be worse than silence.
 - Hard caps on chunk count and total size, and the current session's own
   chunks are excluded — the agent already has that context.
+- Curated facts (``agent-history fact set``) that the prompt names outright
+  go in first, as the current value, and an excerpt that a newer statement
+  appears to replace is marked so — the agent sees the warning, not a bare
+  stale value. ``AGENT_HISTORY_INJECT_MAX_AGE`` and
+  ``AGENT_HISTORY_INJECT_RECENCY`` can also keep old excerpts out or behind.
 
 The hook must never break the prompt it rides on: every failure path exits 0
 with no output.
@@ -28,8 +33,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 
-from . import config, embed, store
+from . import config, embed, facts, store, supersede, timeaxis
 
 MIN_PROMPT_CHARS = 12
 FETCH = 8
@@ -94,23 +100,28 @@ def _run(stream) -> int:
         return 0
 
     db = store.open_for_read()
-    try:
-        vector = embed.pack(embed.embed(prompt, timeout=EMBED_TIMEOUT))
-    except embed.EmbedError:
-        return 0
     cutoff = config.inject_max_distance()
     cross = config.inject_cross_distance()
     session = payload.get("session_id") or ""
     scope = payload.get("cwd") or ""          # working directory of this prompt
     strict = config.strict_enabled()
 
-    rows = [
-        r for r in store.query(db, vector, FETCH)
-        if r[2] != session and _in_scope(r, scope, cutoff, cross, strict)
-    ]
+    try:
+        vector = embed.pack(embed.embed(prompt, timeout=EMBED_TIMEOUT))
+    except embed.EmbedError:
+        rows = []  # no embedder, no excerpts; a curated fact needs none
+    else:
+        rows = [
+            r for r in store.query(db, vector, FETCH)
+            if r[2] != session and _in_scope(r, scope, cutoff, cross, strict)
+        ]
+    rows = _age_filter(rows)
+    current = _current_facts(prompt, scope, strict)
+    hint_of = {id(rows[i]): line for i, line in _hints(rows, current).items()}
     picked = _dedupe(rows)[:MAX_CHUNKS]
-    if not picked:
+    if not picked and not current:
         return 0
+    hints = {j: hint_of[id(r)] for j, r in enumerate(picked) if id(r) in hint_of}
 
     # systemMessage is shown to the user (not the model) — a passive notice,
     # per prompt, of exactly which memories were pulled, so ambient injection
@@ -118,18 +129,80 @@ def _run(stream) -> int:
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
-            "additionalContext": _render(picked, payload.get("cwd")),
+            "additionalContext": _render(picked, payload.get("cwd"),
+                                         facts_in_force=current, hints=hints),
         },
-        "systemMessage": _system_message(picked),
+        "systemMessage": _system_message(picked, current),
     }))
     return 0
 
 
-def _system_message(rows: list[tuple]) -> str:
+def _age_filter(rows: list[tuple]) -> list[tuple]:
+    """Drop excerpts past $AGENT_HISTORY_INJECT_MAX_AGE, then, with
+    $AGENT_HISTORY_INJECT_RECENCY, order the survivors by
+    1/(60+rank) x 0.5^(age / half-life). Both off by default."""
+    now = time.time()
+    max_age = config.inject_max_age()
+    if max_age is not None:
+        rows = [r for r in rows if now - timeaxis.instant(r[4]) <= max_age]
+    half_life = config.inject_recency()
+    if half_life is None or len(rows) < 2:
+        return rows
+    weighted = [(1.0 / (60 + rank)) * timeaxis.decay(now - timeaxis.instant(r[4]), half_life)
+                for rank, r in enumerate(rows)]
+    order = sorted(range(len(rows)), key=lambda i: -weighted[i])
+    return [rows[i] for i in order]
+
+
+def _current_facts(prompt: str, scope: str, strict: bool) -> list[dict]:
+    """Facts in force that the prompt names outright. In strict mode only
+    facts scoped to the current project qualify."""
+    try:
+        found = facts.matching(prompt, cwd=scope or None, strict=True,
+                               limit=facts.INJECT_LIMIT, scoped_only=strict)
+    except Exception:  # noqa: BLE001 - a broken facts file must not block a prompt
+        return []
+    return [fact for _score, fact in found]
+
+
+def _hints(rows: list[tuple], current: list[dict]) -> dict[int, str]:
+    """Row index -> one warning line, for excerpts that a newer excerpt or a
+    current fact appears to replace."""
+    hits = [facts.as_hit(f) for f in current] + [
+        {"text": r[6], "timestamp": r[4], "session_id": r[2],
+         "session_uid": r[8] if len(r) > 8 else None} for r in rows]
+    out: dict[int, str] = {}
+    offset = len(current)
+    for i, hit in enumerate(supersede.annotate(hits)):
+        if i >= offset and hit.get("superseded_hint"):
+            out[i - offset] = supersede.describe(hit["superseded_hint"], with_rank=False)
+    # A fact newer than an excerpt that names its subject outranks it.
+    for i, r in enumerate(rows):
+        if i in out:
+            continue
+        when = timeaxis.instant(r[4])
+        text = (r[6] or "").lower()
+        for fact in current:
+            if (timeaxis.instant(fact["valid_from"]) > when
+                    and fact["subject"].lower() in text):
+                out[i] = (f"predates the current fact for {fact['subject']} · "
+                          f"{fact['predicate']} (since "
+                          f"{timeaxis.local(fact['valid_from'], 10)})")
+                break
+    return out
+
+
+def _system_message(rows: list[tuple], current: list[dict] | None = None) -> str:
     """A compact, per-memory list for the user — what was recalled, at a glance."""
+    current = current or []
     noun = "memory" if len(rows) == 1 else "memories"
-    lines = [f"\U0001f4da agent-history recalled {len(rows)} {noun}"
-             "  ·  /history:inject to toggle"]
+    head = f"\U0001f4da agent-history recalled {len(rows)} {noun}"
+    if current:
+        head += f" and {len(current)} fact{'s' if len(current) != 1 else ''}"
+    lines = [head + "  ·  /history:inject to toggle"]
+    for fact in current:
+        lines.append(f"  · fact {fact['subject']} · {fact['predicate']}: "
+                     f"{' '.join(str(fact['value']).split())[:SNIPPET_CHARS]}")
     for agent, _origin, _session, cwd, timestamp, role, text, *_rest in rows:
         when = (timestamp or "")[:10]
         where = os.path.basename((cwd or "").rstrip("/")) or (cwd or "?")
@@ -189,14 +262,23 @@ def _dedupe(rows: list[tuple]) -> list[tuple]:
     return out
 
 
-def _render(rows: list[tuple], cwd: str | None = None) -> str:
+def _render(rows: list[tuple], cwd: str | None = None, *,
+            facts_in_force: list[dict] | None = None,
+            hints: dict[int, str] | None = None) -> str:
     header = _header(cwd)
     parts = [header]
-    total = len(header)
-    for agent, _origin, session_id, cwd, timestamp, role, text, *_rest in rows:
+    if facts_in_force:
+        lines = ["\nCurrent facts, curated by the user — the value in force now. "
+                 "Where an excerpt below disagrees, the fact wins:"]
+        lines += [f"- {facts.line(f)}" for f in facts_in_force]
+        parts.append("\n".join(lines) + "\n")
+    total = sum(len(p) for p in parts)
+    hints = hints or {}
+    for i, (agent, _origin, session_id, cwd, timestamp, role, text, *_rest) in enumerate(rows):
         excerpt = text[:CHUNK_CHARS]
+        warning = f"\u26a0 {hints[i]}\n" if i in hints else ""
         block = (f"\n--- {agent}/{role}  {(timestamp or '')[:16]}  "
-                 f"{cwd or '?'}  session={session_id}\n{excerpt}\n")
+                 f"{cwd or '?'}  session={session_id}\n{warning}{excerpt}\n")
         if total + len(block) > MAX_TOTAL_CHARS:
             break
         parts.append(block)

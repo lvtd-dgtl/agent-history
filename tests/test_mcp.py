@@ -126,15 +126,16 @@ def test_tool_listing_follows_the_token_scope(hub):
 
     read = run_calls(hub["tokens"]["read"], names)
     write = run_calls(hub["tokens"]["write"], names)
-    assert set(read) == {"history_recall", "history_show"}
-    assert set(write) == {"history_record", "history_note"}
+    assert set(read) == {"history_recall", "history_show", "history_fact_get"}
+    assert set(write) == {"history_record", "history_note", "history_fact"}
     assert read["history_recall"].annotations.read_only_hint is True
     assert write["history_record"].annotations.read_only_hint is False
     assert write["history_record"].annotations.destructive_hint is False
     schema = read["history_recall"].input_schema
     assert schema["required"] == ["query"]
     assert set(schema["properties"]) == {"query", "k", "agent", "surface", "cwd",
-                                         "machine", "mode", "sort", "notes"}
+                                         "machine", "mode", "sort", "notes",
+                                         "since", "until", "recency"}
     assert schema["properties"]["notes"]["default"] == "exclude"
     assert write["history_note"].annotations.destructive_hint is False
 
@@ -145,8 +146,10 @@ def test_no_tool_can_change_or_delete_history(hub):
     async def names(client):
         return {t.name for t in (await client.list_tools()).tools}
 
+    # history_fact only ever adds a row (retiring a value is a row too).
     assert run_calls(combined, names) == {"history_recall", "history_show",
-                                          "history_record", "history_note"}
+                                          "history_record", "history_note",
+                                          "history_fact", "history_fact_get"}
 
 
 def test_modern_protocol_clients_work_too(hub):
@@ -154,7 +157,7 @@ def test_modern_protocol_clients_work_too(hub):
         return {t.name for t in (await client.list_tools()).tools}
 
     assert run_calls(hub["tokens"]["read"], names, mode="auto") == {
-        "history_recall", "history_show"}
+        "history_recall", "history_show", "history_fact_get"}
 
 
 # ------------------------------------------------------------------- recall
@@ -598,7 +601,7 @@ def test_in_process_server_with_a_fixed_identity(hub):
             return names, denied, found
 
     names, denied, found = anyio.run(main)
-    assert names == {"history_recall", "history_show"}
+    assert names == {"history_recall", "history_show", "history_fact_get"}
     assert denied.is_error and data(found)["count"] >= 1
 
 

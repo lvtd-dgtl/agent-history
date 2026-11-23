@@ -14,7 +14,7 @@ from mcp.types import ToolAnnotations
 from . import __version__
 from .mcp_auth import Identity
 from .mcp_server import (DEFAULT_K, DEFAULT_SHOW_LIMIT, Gate, ToolFailure,
-                         _dump, note, recall, record, show_session)
+                         _dump, fact, fact_get, note, recall, record, show_session)
 
 INSTRUCTIONS = (
     "Search and add to the user's history of AI conversations (Claude Code, "
@@ -23,7 +23,10 @@ INSTRUCTIONS = (
     "to save decisions, findings and links at milestones and when a chat wraps "
     "up. history_note adds a session note (a summary with a link to its "
     "source), kept apart from transcripts. Records and notes are append-only "
-    "and secrets are redacted before storage."
+    "and secrets are redacted before storage. history_fact keeps the current "
+    "value of a thing (a host, a default, where something lives) with its "
+    "history; history_fact_get reads it, and history_recall shows matching "
+    "facts first. Hits a newer hit appears to replace carry a warning."
 )
 
 
@@ -55,7 +58,13 @@ def build_server(gate: Gate) -> MCPServer:
             "sort: relevance (default) or newest; notes: exclude (default, "
             "transcripts only), include (matching session notes first, then "
             "transcripts) or only (session notes alone). A note's show field "
-            "is the history_show call that opens its source span."),
+            "is the history_show call that opens its source span. since / "
+            "until: a time window (2026-10-01, an ISO time, today, or an age "
+            "like 30d); until is 'as of' — the past as it stood then. recency: "
+            "a half-life such as 30d that leans results toward recent ones "
+            "(off by default). Curated facts the query names come first "
+            "(role fact). A hit with a warning field may be out of date: a "
+            "newer hit states a different host, address, key or version."),
         annotations=ToolAnnotations(title="Recall from history", read_only_hint=True,
                                     open_world_hint=False),
         structured_output=False,
@@ -71,9 +80,13 @@ def build_server(gate: Gate) -> MCPServer:
         mode: Literal["hybrid", "text", "vector"] = "hybrid",
         sort: Literal["relevance", "newest"] = "relevance",
         notes: Literal["exclude", "include", "only"] = "exclude",
+        since: str | None = None,
+        until: str | None = None,
+        recency: str | None = None,
     ) -> str:
         return run("history_recall", ctx, recall, query, k=k, agent=agent, surface=surface,
-                   cwd=cwd, machine=machine, mode=mode, sort=sort, notes=notes)
+                   cwd=cwd, machine=machine, mode=mode, sort=sort, notes=notes,
+                   since=since, until=until, recency=recency)
 
     @server.tool(
         name="history_show",
@@ -174,5 +187,57 @@ def build_server(gate: Gate) -> MCPServer:
                    duet_message_id=duet_message_id, session_id=session_id,
                    session_machine=session_machine, job_id=job_id,
                    span_start=span_start, span_end=span_end, corrects=corrects)
+
+    @server.tool(
+        name="history_fact",
+        description=(
+            "Record the current value of a thing, keeping what it replaced: "
+            "subject (what it is about, e.g. 'lvtd-fleet-1'), predicate (which "
+            "property, e.g. 'ssh host'), value. Use it when something changes "
+            "— a server moved, a default model changed, a task list moved — "
+            "so later recall returns the value in force, not an old one. "
+            "since: when it became true (default now; a date or an age like "
+            "3d). retire=true records that the value stopped being true. "
+            "source: where it came from (chat URL, session id). scope: a "
+            "project directory it applies in (default everywhere). Secrets "
+            "are redacted. Returns the fact id."),
+        annotations=ToolAnnotations(title="Record a fact", read_only_hint=False,
+                                    destructive_hint=False, idempotent_hint=False,
+                                    open_world_hint=False),
+        structured_output=False,
+    )
+    def history_fact(
+        subject: str,
+        predicate: str,
+        ctx: Context,
+        value: str | None = None,
+        retire: bool = False,
+        since: str | None = None,
+        source: str | None = None,
+        scope: str | None = None,
+    ) -> str:
+        return run("history_fact", ctx, fact, subject=subject, predicate=predicate,
+                   value=value, retire=retire, since=since, source=source, scope=scope)
+
+    @server.tool(
+        name="history_fact_get",
+        description=(
+            "Read curated facts: the value in force for a subject (and "
+            "predicate), or every fact in force when subject is omitted. "
+            "as_of: a date to ask how things stood then. history=true lists "
+            "every value oldest first, with current=true on the one in force."),
+        annotations=ToolAnnotations(title="Read facts", read_only_hint=True,
+                                    open_world_hint=False),
+        structured_output=False,
+    )
+    def history_fact_get(
+        ctx: Context,
+        subject: str | None = None,
+        predicate: str | None = None,
+        as_of: str | None = None,
+        history: bool = False,
+    ) -> str:
+        return run("history_fact_get", ctx, fact_get, subject=subject,
+                   predicate=predicate, as_of=as_of, history=history)
 
     return server

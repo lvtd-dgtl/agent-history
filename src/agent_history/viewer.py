@@ -12,7 +12,7 @@ import json
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import search, show, store
+from . import search, show, store, supersede, timeaxis
 
 HOST = "127.0.0.1"
 DEFAULT_PORT = 8127
@@ -96,6 +96,12 @@ PAGE = """<!doctype html>
     <select id="agent" aria-label="agent filter"><option value="">all agents</option></select>
     <input id="cwd" placeholder="cwd filter" aria-label="cwd filter"
            style="flex:0 1 10rem">
+    <input id="since" placeholder="since (30d)" aria-label="since"
+           style="flex:0 1 7rem">
+    <input id="until" placeholder="as of (date)" aria-label="as of"
+           style="flex:0 1 7rem">
+    <input id="recency" placeholder="half-life" aria-label="recency half-life"
+           style="flex:0 1 6rem">
     <button>search</button>
   </form>
   <div id="status"></div>
@@ -124,6 +130,8 @@ $('f').addEventListener('submit', async ev => {
                                       sort: $('sort').value, k: '20'});
   if ($('agent').value) params.set('agent', $('agent').value);
   if ($('cwd').value) params.set('cwd', $('cwd').value);
+  for (const name of ['since', 'until', 'recency'])
+    if ($(name).value.trim()) params.set(name, $(name).value.trim());
   try {
     const res = await fetch('/api/search?' + params);
     if (!res.ok) throw new Error(await res.text());
@@ -139,7 +147,9 @@ function render(hits) {
     const card = document.createElement('div');
     card.className = 'hit';
     const head = document.createElement('header');
-    const rank = h.score != null ? 'score ' + h.score.toFixed(4)
+    const rank = h.role === 'fact' ? 'curated fact'
+               : h.score != null ? 'score ' + h.score.toFixed(4)
+                 + (h.recency != null ? ' · rec ×' + h.recency.toFixed(2) : '')
                : h.distance != null ? 'dist ' + h.distance.toFixed(2) : 'text match';
     for (const part of [
         h.agent + '/' + h.role, (h.timestamp || '').slice(0, 16),
@@ -150,14 +160,18 @@ function render(hits) {
       head.appendChild(s);
     }
     const pre = document.createElement('pre');
-    pre.textContent = h.text;
+    pre.textContent = (h.warning ? '\u26a0 ' + h.warning + '\n\n' : '') + h.text;
     const origin = document.createElement('div');
     origin.className = 'origin';
     const link = document.createElement('a');
     link.textContent = 'open conversation';
     link.addEventListener('click', () => openSession(h));
-    origin.append(h.file + ' — ');
-    origin.appendChild(link);
+    if (h.role === 'fact' && h.fact) {
+      origin.append('agent-history fact get "' + h.fact.subject + '" --history');
+    } else {
+      origin.append(h.file + ' — ');
+      origin.appendChild(link);
+    }
     card.append(head, pre, origin);
     $('results').appendChild(card);
   }
@@ -209,14 +223,27 @@ class Handler(BaseHTTPRequestHandler):
                 # page's initial load.
                 self._json(store.stats(store.open_for_read(check_model=False)))
             elif parsed.path == "/api/search":
-                self._json(search.search_rows(
+                try:
+                    window, half_life = search.time_options(
+                        params.get("since") or None, params.get("until") or None,
+                        None, params.get("recency") or None)
+                except timeaxis.TimeError as exc:
+                    self._send(400, str(exc).encode("utf-8"), "text/plain; charset=utf-8")
+                    return
+                hits = supersede.annotate(search.search_rows(
                     params.get("q", ""),
                     k=min(int(params.get("k", "20")), 100),
                     cwd=params.get("cwd") or None,
                     agent=params.get("agent") or None,
                     mode=params.get("mode", "hybrid"),
                     sort=params.get("sort", "relevance"),
+                    window=window,
+                    recency=half_life,
                 ))
+                for hit in hits:
+                    if hit.get("superseded_hint"):
+                        hit["warning"] = supersede.describe(hit["superseded_hint"])
+                self._json(hits)
             elif parsed.path == "/api/session":
                 target = params.get("session") or params.get("origin") or ""
                 self._json(show.rows_for(

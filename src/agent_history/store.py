@@ -8,7 +8,7 @@ from typing import Iterable
 
 import sqlite_vec
 
-from . import config, embed, sessions
+from . import config, embed, sessions, timeaxis
 # Session identity helpers, re-exported: callers holding a store connection
 # reach them here.
 from .sessions import link_alias, resolve_session  # noqa: F401
@@ -418,14 +418,15 @@ def query(
     agent: str | None = None,
     machine: str | None = None,
     exclude_machine: Iterable[str] | None = None,
+    window: timeaxis.Window | None = None,
 ) -> list[tuple]:
-    """Nearest neighbours, optionally narrowed by cwd substring, agent or
-    machine. Rows are (*_ROW_COLS, distance).
+    """Nearest neighbours, optionally narrowed by cwd substring, agent,
+    machine or time window. Rows are (*_ROW_COLS, distance).
 
     Filters are applied after the vector search, so we over-fetch when one is
     present to avoid returning fewer than k results.
     """
-    fetch = _fetch(k, cwd, agent, machine, exclude_machine)
+    fetch = _fetch(k, cwd, agent, machine, exclude_machine, window)
     rows = db.execute(
         f"SELECT {_ROW_COLS}, v.distance "
         "FROM vec_chunks v JOIN chunks c ON c.id = v.rowid "
@@ -435,7 +436,7 @@ def query(
     ).fetchall()
 
     return _filter(rows, cwd=cwd, agent=agent, machine=machine,
-                   exclude_machine=exclude_machine)[:k]
+                   exclude_machine=exclude_machine, window=window)[:k]
 
 
 # Column 9 is the chunk's session uid, already canonicalised: a uid merged
@@ -450,12 +451,17 @@ ROW_WIDTH = 12  # columns in _ROW_COLS; a ranking value, if any, follows
 _VEC_K_MAX = 4096  # sqlite-vec's cap on k
 
 
-def _fetch(k: int, cwd, agent, machine, exclude_machine) -> int:
+def _fetch(k: int, cwd, agent, machine, exclude_machine, window=None) -> int:
     """How many candidates to pull before the post-filters trim them.
 
     A machine filter can discard most of the nearest neighbours (a hub's
-    biggest contributor dominates), so it over-fetches harder than the others.
+    biggest contributor dominates), and a time window can discard nearly all
+    of them (an ``--as-of`` far in the past), so both over-fetch harder than
+    the others. sqlite-vec scans every vector whatever k is, so a deep fetch
+    costs little more than a shallow one.
     """
+    if window:
+        return _VEC_K_MAX
     if machine or exclude_machine:
         return min(k * 16, _VEC_K_MAX)
     return min(k * 4 if (cwd or agent) else k, _VEC_K_MAX)
@@ -489,6 +495,7 @@ def text_query(
     agent: str | None = None,
     machine: str | None = None,
     exclude_machine: Iterable[str] | None = None,
+    window: timeaxis.Window | None = None,
 ) -> list[tuple]:
     """BM25-ranked full-text matches, same row shape as query() minus distance.
 
@@ -507,9 +514,9 @@ def text_query(
     terms = _TOKEN.findall(query)
     if not terms:
         return []
-    fetch = _fetch(k, cwd, agent, machine, exclude_machine)
+    fetch = _fetch(k, cwd, agent, machine, exclude_machine, window)
     narrowing = {"cwd": cwd, "agent": agent, "machine": machine,
-                 "exclude_machine": exclude_machine}
+                 "exclude_machine": exclude_machine, "window": window}
 
     hits = _match(db, " ".join(map(_quote, terms)), fetch, **narrowing)
     if len(hits) < k:
@@ -525,7 +532,8 @@ def text_query(
 
 def _match(db: sqlite3.Connection, match: str, limit: int, *,
            cwd: str | None, agent: str | None, machine: str | None,
-           exclude_machine: Iterable[str] | None) -> dict[int, tuple]:
+           exclude_machine: Iterable[str] | None,
+           window: timeaxis.Window | None = None) -> dict[int, tuple]:
     """Filtered FTS rows keyed by chunk id, best BM25 first."""
     try:
         rows = db.execute(
@@ -538,7 +546,7 @@ def _match(db: sqlite3.Connection, match: str, limit: int, *,
         return {}
     return {row[0]: row[1:] for row in rows
             if _filter([row[1:]], cwd=cwd, agent=agent, machine=machine,
-                       exclude_machine=exclude_machine)}
+                       exclude_machine=exclude_machine, window=window)}
 
 
 def hybrid_query(
@@ -551,6 +559,7 @@ def hybrid_query(
     agent: str | None = None,
     machine: str | None = None,
     exclude_machine: Iterable[str] | None = None,
+    window: timeaxis.Window | None = None,
 ) -> list[tuple]:
     """Merge vector and full-text rankings with reciprocal rank fusion.
 
@@ -564,7 +573,7 @@ def hybrid_query(
     """
     pool = max(k * 10, 50)
     narrowing = {"cwd": cwd, "agent": agent, "machine": machine,
-                 "exclude_machine": exclude_machine}
+                 "exclude_machine": exclude_machine, "window": window}
     vec_rows = query(db, vector, pool, **narrowing)
     txt_rows = text_query(db, query_text, pool, **narrowing)
 
@@ -585,7 +594,10 @@ def hybrid_query(
 
 def _filter(rows: list[tuple], *, cwd: str | None, agent: str | None,
             machine: str | None = None,
-            exclude_machine: Iterable[str] | None = None) -> list[tuple]:
+            exclude_machine: Iterable[str] | None = None,
+            window: timeaxis.Window | None = None) -> list[tuple]:
+    if window:
+        rows = [r for r in rows if window.contains(r[4])]
     if agent:
         rows = [r for r in rows if r[0] == agent]
     if cwd:
