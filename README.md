@@ -288,7 +288,11 @@ $ agent-history search "where does winch-bot run" --as-of 2026-07-01
 0.5^(age / 30 days), so "current state of X" leans to recent statements while
 a much stronger old hit can still win. It is off unless asked for — default
 ranking is unchanged — and each reweighted hit shows its factor
-(`score=0.0123 rec×0.42`).
+(`score=0.0123 rec×0.42`). Hybrid scores sit in a narrow band (a hit both
+arms rank first scores only about twice one that a single arm ranks first),
+so one half-life of age outweighs most relevance gaps: start generous
+(`90d`–`180d`) and let [`eval`](#measuring-search-quality-eval) show whether a
+shorter one helps on your questions.
 
 **Possibly superseded.** Among one search's hits, an older hit is flagged
 when a newer hit from a different conversation states a different value for

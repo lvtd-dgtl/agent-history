@@ -410,11 +410,16 @@ def _print_row(position: int, result: dict, full: bool,
     # Tag only non-default Claude profiles, so ~/.claude output reads as before.
     profile = result.get("profile")
     tag = f"[{profile}]" if profile and profile != "claude" else ""
-    print(
-        f"#{position}  {ranking}  {timestamp}  "
-        f"{result['agent']}{tag}/{result['role']}{sub_label(result)}  "
-        f"{result['cwd'] or '?'}{where}"
-    )
+    if result.get("role") == facts.ROLE:
+        since = timeaxis.local(result.get("timestamp"), 10)
+        print(f"#{position}  fact  since {since}  "
+              f"{result.get('cwd') or 'all projects'}{where}")
+    else:
+        print(
+            f"#{position}  {ranking}  {timestamp}  "
+            f"{result['agent']}{tag}/{result['role']}{sub_label(result)}  "
+            f"{result['cwd'] or '?'}{where}"
+        )
     if result.get("role") == facts.ROLE and result.get("fact"):
         print(f"    fact: agent-history fact get {_quoted(result['fact']['subject'])} "
               "--history")
