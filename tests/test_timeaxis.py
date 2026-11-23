@@ -110,10 +110,31 @@ def test_decay_halves_each_half_life():
     assert timeaxis.decay(float("inf"), 30 * day) == 0.0, "an undated chunk weighs nothing"
 
 
-@pytest.mark.parametrize("text", ["9999-12-31", "9999-12-31T23:59:59"])
-def test_dates_at_the_edge_of_time_fail_cleanly(text):
+def test_a_day_past_the_last_date_is_refused_cleanly():
+    # The end of 9999-12-31 is the start of a day that does not exist.
     with pytest.raises(timeaxis.TimeError, match="out of range"):
-        timeaxis.parse_bound(text, end=True)
+        timeaxis.parse_bound("9999-12-31", end=True)
+
+
+@pytest.mark.parametrize("tz", ["UTC", "America/Chicago", "Asia/Tokyo"])
+def test_edge_times_parse_or_are_refused_never_raise_otherwise(tz, monkeypatch):
+    """Whether a naive local time near year 9999 (or before 1970) still fits
+    depends on the zone; either answer is fine, a traceback is not."""
+    import time
+
+    if not hasattr(time, "tzset"):
+        pytest.skip("cannot switch zones on this platform")
+    monkeypatch.setenv("TZ", tz)
+    time.tzset()
+    try:
+        for text in ("9999-12-31T23:59:59", "0001-01-01T00:00:00"):
+            try:
+                assert isinstance(timeaxis.parse_bound(text, end=True), float)
+            except timeaxis.TimeError as exc:
+                assert "out of range" in str(exc)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_extreme_stored_timestamps_do_not_raise():
