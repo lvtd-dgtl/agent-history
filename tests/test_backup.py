@@ -432,6 +432,10 @@ def test_a_backup_with_a_damaged_store_still_restores_the_healthy_ones(indexed, 
     assert cli.main(["purge", "--session", "doomed", "--yes"]) == 0
     assert chunks() == 5
     capsys.readouterr()
+    assert cli.main(["backup", "restore", made.name]) == 0
+    preview = capsys.readouterr().out
+    assert "would skip ship.db" in preview
+    assert "ship.db" not in preview.split("would restore ", 1)[1].split(" from ", 1)[0]
     assert cli.main(["backup", "restore", made.name, "--yes"]) == 1, \
         "the live ship.db is still damaged, and the check after the restore says so"
     cap = capsys.readouterr()

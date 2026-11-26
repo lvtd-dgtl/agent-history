@@ -744,9 +744,14 @@ def _backup_one(args, action: str, backup, json) -> int:
     if action == "restore":
         manifest = backup.read_manifest(path)
         if not args.yes:
-            print(f"would restore {', '.join(manifest['files'])} from {path.name} "
+            bad = backup.damaged(manifest)
+            good = [name for name in manifest["files"] if name not in bad]
+            print(f"would restore {', '.join(good) or 'nothing'} from {path.name} "
                   f"(made {manifest.get('created')}, v{manifest.get('version')}), after "
                   "backing up what is there now. re-run with --yes to do it.")
+            for name in bad:
+                print(f"would skip {name}: its copy was damaged when backed up, so the "
+                      "live one is left as it is.")
             if backup.TOKEN_FILE in manifest.get("extras", []):
                 print(f"the token file is not restored (it would revive revoked "
                       f"tokens); it is in {path / backup.TOKEN_FILE} if needed.")
