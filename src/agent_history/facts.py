@@ -197,7 +197,10 @@ def open_store(write: bool) -> sqlite3.Connection | None:
     if not write and not path.exists():
         return None
     if write:
+        from . import backup
+
         config.ensure_data_home()
+        backup.guard_upgrade()
     created = not path.exists()
     db = sqlite3.connect(path) if write else sqlite3.connect(
         f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True)
@@ -731,7 +734,10 @@ def run(args) -> int:
                 print(f"would delete {len(found)} fact row(s) for {args.subject!r} on this "
                       "machine. this is permanent; re-run with --yes to do it.")
                 return 0
-            removed = forget(args.subject, args.predicate)
+            from . import backup
+
+            with backup.guarded("fact forget"):
+                removed = forget(args.subject, args.predicate)
             print(f"deleted {removed} fact row(s) on this machine.")
             if config.hub_ingest() or config.remote_url():
                 print("the hub keeps its own (redacted) copies; delete them there with "

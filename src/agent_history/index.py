@@ -243,12 +243,19 @@ def _release_consumed(active: list) -> None:
 
 def run(reindex: bool = False, force: bool = False) -> int:
     if reindex:
+        from . import backup
+
         code = _guard_reindex(force)
         if code is not None:
             return code
-        print("reindex: removing existing index")
-        store.reset()
+        with backup.guarded("reindex"):
+            print("reindex: removing existing index")
+            store.reset()
+            return _run()
+    return _run()
 
+
+def _run() -> int:
     active = adapters.available_adapters()
     if not active:
         if config.hub_mode():
@@ -533,7 +540,10 @@ def run_reembed() -> int:
             print("another indexing run holds the lock; retry shortly",
                   file=sys.stderr)
             return 1
-        return _reembed_locked()
+        from . import backup
+
+        with backup.guarded("reembed"):
+            return _reembed_locked()
 
 
 def _reembed_locked() -> int:

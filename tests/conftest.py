@@ -13,6 +13,9 @@ import pytest
 # Environment variables that would otherwise leak a developer's real setup in.
 _LEAKY = [
     "AGENT_HISTORY_HOME",
+    "AGENT_HISTORY_AUTO_BACKUP",
+    "AGENT_HISTORY_BACKUP_DIR",
+    "AGENT_HISTORY_BACKUP_KEEP",
     "AGENT_HISTORY_PROJECTS",
     "AGENT_HISTORY_CODEX",
     "AGENT_HISTORY_OPENCODE_DB",

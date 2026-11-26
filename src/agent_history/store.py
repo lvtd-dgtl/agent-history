@@ -127,6 +127,19 @@ def _migrate(db: sqlite3.Connection) -> None:
     db.commit()
 
 
+def _needs_migration(db: sqlite3.Connection) -> bool:
+    """Whether `_migrate` would change the schema (not just backfill)."""
+    columns = {row[1] for row in db.execute("PRAGMA table_info(chunks)")}
+    if not columns:
+        return False
+    if any(name not in columns for name, _kind in _ADDED_COLUMNS):
+        return True
+    existing = {row[0] for row in db.execute(
+        "SELECT name FROM sqlite_master WHERE type IN ('table', 'index')")}
+    return not {"idx_chunks_machine", "idx_chunks_session_uid", "sessions",
+                "session_aliases", "idx_aliases_value", "idx_aliases_uid"} <= existing
+
+
 # (name, type) of every column added to `chunks` after its first release.
 _ADDED_COLUMNS = (
     ("machine", "TEXT"),
@@ -169,8 +182,11 @@ def open_for_write() -> tuple[sqlite3.Connection, int]:
     both are recorded. On an existing one they are checked, so switching models
     fails loudly instead of silently writing mismatched vectors.
     """
+    from . import backup
+
     path = config.db_path()
     config.ensure_data_home()
+    backup.guard_upgrade()  # a copy of every store before a new version writes
     db = _raw_connect(path)
     config.secure_file(path)
     db.executescript(
@@ -282,6 +298,15 @@ def _migrate_for_reader(db: sqlite3.Connection) -> None:
     longer than SQLite's wait, say so rather than failing on a missing column
     later.
     """
+    if _needs_migration(db):
+        from . import backup
+
+        try:
+            backup.guard_upgrade()
+        except backup.BackupError as exc:
+            db.close()
+            raise StoreError(f"the index needs a schema upgrade, and a backup "
+                             f"must come first: {exc}") from exc
     try:
         _migrate(db)
     except sqlite3.OperationalError as exc:

@@ -55,7 +55,12 @@ def run(yes: bool = False) -> int:
             print("another indexing run holds the lock; retry shortly",
                   file=sys.stderr)
             return 1
-        return _run_locked(yes)
+        if not yes:
+            return _run_locked(yes)
+        from . import backup
+
+        with backup.guarded("scrub"):
+            return _run_locked(yes)
 
 
 def _run_locked(yes: bool) -> int:

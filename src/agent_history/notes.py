@@ -453,7 +453,10 @@ def open_store(write: bool) -> tuple[sqlite3.Connection, bool]:
             return db, False
         db, vec = _connect(path)
     else:
+        from . import backup
+
         config.ensure_data_home()
+        backup.guard_upgrade()
         db, vec = _connect(path)
         config.secure_file(path)
         db.executescript(_SCHEMA)
