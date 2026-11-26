@@ -168,6 +168,31 @@ def _merge_records(results: list[dict], records: list[dict]) -> list[dict]:
     return [hit for _, _, _, hit in scored]
 
 
+def _record_hits(query: str, *, k: int, mode: str, cwd: str | None,
+                 machine: str | None, window, per_session: int | None,
+                 min_chars: int) -> list[dict]:
+    """history_record notes for a recall: the best k that pass ``min_chars``
+    and the per-session cap. Those two drop records after the search, so
+    when they remove some, ask again deeper — as transcripts are — until k
+    pass or the records run out."""
+    want = k
+    while True:
+        found = notes_store.search(query, k=want, mode=mode, records=True, cwd=cwd,
+                                   machine=machine, window=window)
+        kept = found
+        if min_chars:
+            kept = [note for note in kept
+                    if len(note.get("text") or note.get("excerpt") or "") >= min_chars]
+        if per_session:
+            kept = _cap_sessions(kept, per_session, lambda note: note.get("record_session"))
+        if len(kept) >= k or len(found) < want or want >= _RECORDS_MAX:
+            return kept[:k]
+        want = min(want * 4, _RECORDS_MAX)
+
+
+_RECORDS_MAX = 1024  # records asked for at most, however narrow the filters
+
+
 def _cap_sessions(hits: list[dict], n: int, session) -> list[dict]:
     """At most ``n`` hits per conversation, in order. A hit with no session
     of its own counts alone rather than sharing one empty key."""
@@ -242,9 +267,10 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
         if (notes == "exclude" and records_fit
                 and (not wanted or SURFACE in store.agent_set(wanted))):
             try:
-                record_hits = notes_store.search(query, k=k, mode=mode, records=True,
-                                                 cwd=cwd or None, machine=machine or None,
-                                                 window=window)
+                record_hits = _record_hits(query, k=k, mode=mode, cwd=cwd or None,
+                                           machine=machine or None, window=window,
+                                           per_session=narrowing["per_session"],
+                                           min_chars=narrowing["min_chars"])
             except embed.EmbedError as exc:
                 raise ToolFailure(f"embedding unavailable ({exc}); "
                                   "retry with mode='text'") from None
@@ -315,13 +341,6 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
         # capped before merging and the merged list after, then cut to k:
         # capping a cut list would leave it short with nothing to refill it.
         per = narrowing["per_session"]
-        floor = narrowing["min_chars"]
-        if floor:
-            record_hits = [note for note in record_hits
-                           if len(note.get("text") or note.get("excerpt") or "") >= floor]
-        if per:
-            record_hits = _cap_sessions(record_hits, per,
-                                        lambda note: note.get("record_session"))
         leading = [hit for hit in results if hit["role"] == facts.ROLE]
         merged = _merge_records([hit for hit in results if hit["role"] != facts.ROLE],
                                 record_hits)

@@ -310,3 +310,19 @@ def test_min_chars_applies_to_records(hub):  # noqa: F811
     assert any(h["role"] == "summary" for h in data(read(hub, "history_recall", q))["results"])
     long_only = data(read(hub, "history_recall", {**q, "min_chars": 2000}))["results"]
     assert long_only and all(h["role"] != "summary" for h in long_only)
+
+
+def test_records_fill_k_from_more_chats_when_the_cap_binds(hub):  # noqa: F811
+    # One chat with many matching records, then three other chats.
+    for n in range(6):
+        data(write(hub, title=f"quorum plan record {n}",
+                   summary=f"quorum plan quorum plan, detail number {n}"))
+    for n in range(3):
+        data(write(hub, title=f"quorum plan, chat {n}", summary="quorum plan",
+                   chat_url=f"https://claude.ai/chat/0b5e1d4c-1111-4222-8333-44445555{n:04d}"))
+    index_hub(hub)
+    found = data(read(hub, "history_recall", {"query": "quorum", "mode": "text",
+                                              "k": 4, "per_session": 1}))
+    chats = [h["session"] for h in found["results"] if h["role"] == "summary"]
+    assert len(chats) == 4 and len(set(chats)) == 4, \
+        "the cap reaches past one chat's records to the others"
