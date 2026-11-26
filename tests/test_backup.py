@@ -49,7 +49,7 @@ def test_a_backup_holds_every_store_with_a_manifest(indexed, monkeypatch):
     (config.data_home() / "mcp-tokens.json").write_text('{"tokens": []}\n')
     (config.data_home() / "outbox").mkdir()
     (config.data_home() / "outbox" / "batch-1.jsonl").write_text("{}\n")
-    made = backup.snapshot("manual", manual=True, label="before the test")
+    made = backup.snapshot("manual", kind="manual", label="before the test")
     manifest = backup.read_manifest(made)
     assert {"index.db", "facts.db"} <= set(manifest["files"])
     entry = manifest["files"]["index.db"]
@@ -67,7 +67,7 @@ def test_a_backup_holds_every_store_with_a_manifest(indexed, monkeypatch):
 
 
 def test_a_damaged_backup_is_reported(indexed):
-    made = backup.snapshot("manual", manual=True)
+    made = backup.snapshot("manual", kind="manual")
     copy = made / "index.db"
     data = bytearray(copy.read_bytes())
     data[len(data) // 2] ^= 0xFF
@@ -132,27 +132,36 @@ def test_restore_brings_purged_rows_back(indexed, capsys):
 
 
 def test_a_damaged_backup_is_never_restored(indexed, capsys):
-    made = backup.snapshot("manual", manual=True)
+    made = backup.snapshot("manual", kind="manual")
     (made / "index.db").write_bytes(b"not a database")
     assert cli.main(["backup", "restore", made.name, "--yes"]) == 1
     assert "not intact" in capsys.readouterr().err
     assert chunks() == 8
 
 
-def test_only_automatic_backups_are_pruned(indexed, monkeypatch):
+def test_only_automatic_backups_are_pruned_each_kind_apart(indexed, monkeypatch):
     monkeypatch.setenv("AGENT_HISTORY_BACKUP_KEEP", "2")
-    manual = backup.snapshot("manual", manual=True)
+    manual = backup.snapshot("manual", kind="manual")
+    for n in range(3):
+        backup.snapshot(f"upgrade {n}", kind="upgrade")
     for n in range(4):
         backup.snapshot(f"auto {n}")
     names = [m["reason"] for _p, m in backup.backups()]
-    assert names == ["manual", "auto 2", "auto 3"]
+    assert names == ["manual", "upgrade 1", "upgrade 2", "auto 2", "auto 3"], \
+        "operations cannot push out the backups made before an upgrade"
     assert manual.exists()
 
 
-def test_backup_dir_can_live_elsewhere(indexed, tmp_path, monkeypatch):
+def test_backup_dir_can_live_elsewhere_without_homes_sharing_it(indexed, tmp_path,
+                                                                monkeypatch):
     monkeypatch.setenv("AGENT_HISTORY_BACKUP_DIR", str(tmp_path / "other-disk"))
-    made = backup.snapshot("manual", manual=True)
-    assert made.parent == tmp_path / "other-disk" / config.data_home().name
+    made = backup.snapshot("manual", kind="manual")
+    assert made.parent.parent == tmp_path / "other-disk"
+    assert made.parent.name.startswith(config.data_home().name + "-")
+    monkeypatch.setenv("AGENT_HISTORY_TENANTS", str(tmp_path / "tenants"))
+    with config.tenant_home(config.data_home().name):
+        assert backup.root() != made.parent, "same basename, different home"
+        assert backup.backups() == []
 
 
 # --- the first write by a new version ---------------------------------------------------
@@ -203,7 +212,7 @@ def test_a_reader_that_must_migrate_backs_up_first(fake_embed):
 # --- checking the live data ---------------------------------------------------------------
 
 def test_check_passes_on_healthy_data_and_reports_growth(indexed, capsys):
-    backup.snapshot("manual", manual=True)
+    backup.snapshot("manual", kind="manual")
     db, _ = store.open_for_write()
     put(db, "one more chunk", session="new")
     db.commit()
@@ -224,7 +233,7 @@ def test_check_catches_a_chunk_without_its_vector(indexed, capsys):
 
 
 def test_check_no_loss_fails_after_rows_disappear(indexed, monkeypatch, capsys):
-    backup.snapshot("manual", manual=True)
+    backup.snapshot("manual", kind="manual")
     monkeypatch.setenv("AGENT_HISTORY_AUTO_BACKUP", "0")
     assert cli.main(["purge", "--session", "doomed", "--yes"]) == 0
     capsys.readouterr()
@@ -285,3 +294,116 @@ def test_backup_every_tenant(tmp_path, monkeypatch, fake_embed, capsys):
     capsys.readouterr()
     assert cli.main(["backup", "create", "--tenant", "../etc"]) == 1
     capsys.readouterr()
+
+
+# --- review fixes -------------------------------------------------------------------------
+
+def test_restore_leaves_the_token_file_alone(indexed, monkeypatch, capsys):
+    from agent_history import mcp_auth
+
+    monkeypatch.setenv("AGENT_HISTORY_MCP_TOKENS", str(config.data_home() / "mcp-tokens.json"))
+    leaked = mcp_auth.add_token("leaky", ["read"], None)
+    made = backup.snapshot("manual", kind="manual")
+    assert mcp_auth.revoke_token("leaky")
+    assert cli.main(["backup", "restore", made.name]) == 0
+    assert "token file is not restored" in capsys.readouterr().out
+    assert cli.main(["backup", "restore", made.name, "--yes"]) == 0
+    capsys.readouterr()
+    assert mcp_auth.TokenStore().authenticate(leaked) is None, "a revoked token stays revoked"
+
+
+def test_a_damaged_store_is_kept_flagged_and_blocks_nothing_else(indexed, capsys):
+    bad = config.data_home() / "ship.db"
+    db = sqlite3.connect(bad)
+    db.execute("CREATE TABLE t (x)")
+    db.executemany("INSERT INTO t VALUES (?)", [("x" * 500,)] * 200)
+    db.commit()
+    db.close()
+    data = bytearray(bad.read_bytes())
+    for offset in range(4096, min(len(data), 4096 * 4)):
+        data[offset] = 0xAA
+    bad.write_bytes(bytes(data))
+    made = backup.snapshot("manual", kind="manual")
+    manifest = backup.read_manifest(made)
+    assert manifest["damaged"] and manifest["damaged"][0].startswith("ship.db")
+    assert manifest["files"]["index.db"]["integrity"] == "ok"
+    assert "WARNING" in capsys.readouterr().err
+    (config.data_home() / backup.STAMP).write_text("0.1.0\n")
+    db, _ = store.open_for_write()
+    db.close()
+    capsys.readouterr()
+
+
+def test_queued_batches_that_vanish_mid_copy_are_skipped(indexed, monkeypatch):
+    box = config.data_home() / "notes-outbox"
+    box.mkdir()
+    (box / "keep.jsonl").write_text("{}\n")
+    (box / "gone.jsonl").write_text("{}\n")
+    (box / "half.jsonl.part").write_text("{")
+    real = backup.shutil.copy2
+
+    def racing(src, dst, *a, **k):
+        if str(src).endswith("gone.jsonl"):
+            raise FileNotFoundError(src)
+        return real(src, dst, *a, **k)
+
+    monkeypatch.setattr(backup.shutil, "copy2", racing)
+    made = backup.snapshot("manual", kind="manual")
+    assert sorted(p.name for p in (made / "notes-outbox").iterdir()) == ["keep.jsonl"]
+    assert "notes-outbox" in backup.read_manifest(made)["extras"]
+
+
+def test_a_store_that_vanished_is_not_copied_as_an_empty_one(tmp_path):
+    with pytest.raises(sqlite3.OperationalError):
+        backup._copy_db(tmp_path / "gone.db", tmp_path / "copy.db")
+    assert not (tmp_path / "gone.db").exists()
+
+
+def test_an_older_version_writing_does_not_back_up_again(indexed):
+    stamp = config.data_home() / backup.STAMP
+    stamp.write_text("9.0.0\n")
+    db, _ = store.open_for_write()
+    db.close()
+    assert backup.backups() == [] and stamp.read_text().strip() == "9.0.0"
+
+
+def test_a_problem_from_before_warns_instead_of_failing_the_operation(indexed, capsys):
+    db = store.open_for_maintenance()
+    db.execute("DELETE FROM vec_chunks WHERE rowid = (SELECT min(id) FROM chunks)")
+    db.commit()
+    db.close()
+    assert cli.main(["purge", "--session", "doomed", "--yes"]) == 0
+    err = capsys.readouterr().err
+    assert "already so before purge" in err and "vectors" in err
+    assert chunks() == 5
+
+
+def test_a_problem_the_operation_caused_fails_it(indexed, capsys):
+    with pytest.raises(backup.IntegrityError, match="restore it with"):
+        with backup.guarded("test"):
+            db = store.open_for_maintenance()
+            db.execute("DELETE FROM vec_chunks WHERE rowid = (SELECT max(id) FROM chunks)")
+            db.commit()
+            db.close()
+    capsys.readouterr()
+
+
+def test_erasing_operations_always_say_where_the_data_remains(indexed, capsys):
+    with backup.guarded("scrub", erases=True) as made:
+        pass
+    assert f"still in backup {made.name}" in capsys.readouterr().err
+
+
+def test_nothing_to_do_means_no_backup(indexed, capsys):
+    assert cli.main(["purge", "--session", "no-such-session", "--yes"]) == 0
+    assert cli.main(["fact", "forget", "no-such-subject", "--yes"]) == 0
+    capsys.readouterr()
+    assert backup.backups() == []
+
+
+def test_backup_command_errors_are_its_own(indexed, capsys):
+    assert cli.main(["backup", "restore", "typo", "--yes"]) == 1
+    err = capsys.readouterr().err
+    assert "is not a backup" in err and "AUTO_BACKUP" not in err
+    assert cli.main(["backup", "check", "--tenant", "nosuch"]) == 1
+    assert "no tenant" in capsys.readouterr().err

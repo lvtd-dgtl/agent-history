@@ -81,8 +81,14 @@ def extensions_supported() -> bool:
         db.close()
 
 
+# Seconds a connection waits for another's lock before "database is locked".
+# A backup holds a read lock for the whole copy of a large index; writers
+# (hooks, the hub's indexer, `fact set`) wait for it instead of failing.
+BUSY_TIMEOUT = 300
+
+
 def _raw_connect(path: Path) -> sqlite3.Connection:
-    db = sqlite3.connect(path)
+    db = sqlite3.connect(path, timeout=BUSY_TIMEOUT)
     if not hasattr(db, "enable_load_extension"):
         db.close()
         raise StoreError(EXTENSION_HELP)

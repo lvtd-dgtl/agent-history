@@ -29,11 +29,16 @@ every write that could lose history.
   the backup to restore if it fails. `agent-history backup` makes one by hand
   and has `list`, `check` (corruption, chunks vs full-text vs vectors, and
   any table with fewer rows than a backup; `--no-loss` makes that fatal),
-  `verify`, `restore` (backs up what it replaces first) and `delete`;
-  `--tenant`/`--all-tenants` on a hub. Five automatic backups are kept per
-  data home (`AGENT_HISTORY_BACKUP_KEEP`), hand-made ones until deleted;
+  `verify`, `restore` (backs up what it replaces first; leaves the token file
+  alone) and `delete`; `--tenant`/`--all-tenants` on a hub. A damaged store
+  is copied and flagged rather than blocking the rest. Kept per data home:
+  the last five backups made before operations (`AGENT_HISTORY_BACKUP_KEEP`),
+  the last two made before upgrades, and hand-made ones until deleted.
   `AGENT_HISTORY_BACKUP_DIR` puts them on another disk and
   `AGENT_HISTORY_AUTO_BACKUP=0` turns the automatic ones off.
+- Writers wait up to five minutes for another connection's lock (was five
+  seconds), so a backup in progress delays an index run instead of failing
+  it.
 - **Search narrowing**: `--subagents include|exclude|only` (a subagent's user
   chunks are its parent's brief), `--role` (repeatable or comma-separated),
   `--min-chars`, `--agent a,b` lists and `--exclude-agent`, and

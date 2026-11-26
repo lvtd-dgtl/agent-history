@@ -649,7 +649,8 @@ def _backup_errors() -> tuple:
 def _each_home(args):
     """The data homes a backup command covers: this one, one tenant, or all."""
     if getattr(args, "tenant", None):
-        config.tenant_dir(args.tenant)  # validates the name
+        if not config.tenant_dir(args.tenant).is_dir():  # also validates the name
+            raise ValueError(f"no tenant {args.tenant!r} under {config.tenants_root()}")
         yield args.tenant
         return
     if getattr(args, "all_tenants", False):
@@ -681,13 +682,18 @@ def _cmd_backup(args) -> int:
         with scope:
             if len(homes) > 1 or tenant:
                 print(f"== {tenant or 'this machine'}  ({config.data_home()})")
-            code = max(code, _backup_one(args, action, backup, json))
+            try:
+                code = max(code, _backup_one(args, action, backup, json))
+            except backup.BackupError as exc:
+                # One tenant's trouble must not stop the others.
+                print(f"error: {exc}", file=sys.stderr)
+                code = 1
     return code
 
 
 def _backup_one(args, action: str, backup, json) -> int:
     if action == "create":
-        made = backup.snapshot("manual", manual=True, label=getattr(args, "label", None))
+        made = backup.snapshot("manual", kind="manual", label=getattr(args, "label", None))
         if made is None:
             print(f"nothing to back up in {config.data_home()}")
             return 0
@@ -739,6 +745,9 @@ def _backup_one(args, action: str, backup, json) -> int:
             print(f"would restore {', '.join(manifest['files'])} from {path.name} "
                   f"(made {manifest.get('created')}, v{manifest.get('version')}), after "
                   "backing up what is there now. re-run with --yes to do it.")
+            if backup.TOKEN_FILE in manifest.get("extras", []):
+                print(f"the token file is not restored (it would revive revoked "
+                      f"tokens); it is in {path / backup.TOKEN_FILE} if needed.")
             return 0
         before = backup.restore(path)
         if before:
@@ -795,9 +804,12 @@ def _cmd_purge(args) -> int:
         print(f"would delete {len(rows)} chunk(s) ({target}).")
         print("this is permanent and cannot be undone. re-run with --yes to do it.")
         return 0
+    if not rows:
+        print("purged 0 chunk(s): nothing matched.")
+        return 0
     from . import backup
 
-    with backup.guarded("purge"):
+    with backup.guarded("purge", erases=True):
         removed = store.purge(db, rows)
     print(f"purged {removed} chunk(s) — deleted from the index.")
     return 0
@@ -981,12 +993,7 @@ def _cmd_notes(args: argparse.Namespace) -> int:
               f"rewritten; audit record added")
         return 0
     if action == "migrate-records":
-        if not args.yes:
-            return notes.migrate_records(apply=False)
-        from . import backup
-
-        with backup.guarded("notes migrate-records"):
-            return notes.migrate_records(apply=True)
+        return notes.migrate_records(apply=args.yes)
     if action == "audit":
         for entry in notes.audit_log():
             print(f"{entry['at']}  {entry['action']}  {entry['note_id']}  by "
@@ -1150,11 +1157,7 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             return scrub.run(yes=args.yes)
         if args.command == "relabel":
             from . import relabel
-            if not args.apply:
-                return relabel.run(apply=False)
-            from . import backup
-            with backup.guarded("relabel"):
-                return relabel.run(apply=True)
+            return relabel.run(apply=args.apply)
         if args.command == "backup":
             return _cmd_backup(args)
 

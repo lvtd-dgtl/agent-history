@@ -4,19 +4,23 @@ The index is often the only copy of a conversation: agents delete old
 transcripts, and a shipper's files leave the machine once the hub has them.
 So every store is backed up before anything that could lose rows:
 
-- the first write by a new version (a schema upgrade, or code that writes
+- the first write by a newer version (a schema upgrade, or code that writes
   differently), detected by the version stamp in the data home;
 - every command that deletes or rewrites rows: reindex, reembed, purge,
   scrub, relabel, ``notes migrate-records``, ``fact forget``.
 
-A backup is a directory under ``<data home>/backups/`` (or
-``$AGENT_HISTORY_BACKUP_DIR``) holding a consistent copy of each SQLite store,
-made with SQLite's backup API so it is safe while other processes read and
-write, plus the token file and the not-yet-shipped outboxes. Its
-``manifest.json`` records each file's size, SHA-256, ``PRAGMA
-integrity_check`` result and per-table row counts. It is written under a
-temporary name and renamed into place only when complete, so a backup that
-exists is a whole one.
+A backup is a directory under ``<data home>/backups/`` (or a folder of its
+own under ``$AGENT_HISTORY_BACKUP_DIR``) holding a consistent copy of each
+SQLite store, made with SQLite's backup API, plus the token file and the
+batches not yet shipped. Its ``manifest.json`` records each file's size,
+SHA-256, ``PRAGMA integrity_check`` result and per-table row counts. It is
+written under a temporary name and renamed into place only when complete,
+so a backup that exists is a whole one. A store whose copy fails the check
+is kept anyway and flagged: a damaged copy is better than none, and one bad
+store must not stop the others being saved.
+
+While a store is copied, other processes can read it but their writes wait;
+every writer waits up to ``store.BUSY_TIMEOUT`` for that rather than failing.
 
 ``check`` compares the live stores with a backup: corruption, the index's
 three views of the chunks (rows, full-text, vectors) disagreeing, and any
@@ -25,8 +29,8 @@ table that has fewer rows than the backup recorded.
 If a backup cannot be made (no space, unreadable store) the operation that
 asked for it does not run: losing the safety net is never silent. Set
 ``AGENT_HISTORY_AUTO_BACKUP=0`` to run without one, for example to erase data
-on purpose; backups keep what a later purge or ``fact forget`` removes until
-they are deleted.
+on purpose; backups keep what a later purge, scrub or ``fact forget``
+removes until they are deleted.
 """
 from __future__ import annotations
 
@@ -43,18 +47,21 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import quote
 
 from . import __version__, config
 
 MANIFEST = "manifest.json"
 STAMP = ".written-by"
 PARTIAL = ".partial-"
-DEFAULT_KEEP = 5            # automatic backups kept per data home
+DEFAULT_KEEP = 5            # backups made before an operation, per data home
+UPGRADE_KEEP = 2            # backups made before a new version's first write
 SPACE_MARGIN = 64 * 2**20   # free space to leave beyond the copy itself
 LOCK_TIMEOUT = 600          # seconds to wait for another backup
-EXTRA_FILES = ("mcp-tokens.json",)
-EXTRA_DIRS = ("outbox", "facts-outbox")
+TOKEN_FILE = "mcp-tokens.json"
+OUTBOXES = ("outbox", "facts-outbox", "notes-outbox")
 _SQLITE_HEADER = b"SQLite format 3\x00"
+_FAILURES = (OSError, sqlite3.Error, shutil.Error)
 
 
 class BackupError(RuntimeError):
@@ -81,13 +88,15 @@ def keep() -> int:
 
 
 def root() -> Path:
-    """Where this data home's backups go. With $AGENT_HISTORY_BACKUP_DIR
-    (another disk, say) each data home gets its own folder there, so a hub's
-    tenants never share one."""
+    """Where this data home's backups go. Under $AGENT_HISTORY_BACKUP_DIR
+    (another disk, say) each data home gets a folder named for its full
+    path, so two homes — a hub and its tenants — never share one."""
     raw = (config._env("AGENT_HISTORY_BACKUP_DIR", "") or "").strip()
+    home = config.data_home()
     if raw:
-        return Path(raw).expanduser() / config.data_home().name
-    return config.data_home() / "backups"
+        tag = hashlib.sha256(str(home.expanduser().resolve()).encode()).hexdigest()[:10]
+        return Path(raw).expanduser() / f"{home.name}-{tag}"
+    return home / "backups"
 
 
 # ---------------------------------------------------------------- what to copy
@@ -108,20 +117,17 @@ def stores() -> list[Path]:
     return found
 
 
-def _extras() -> list[Path]:
-    home = config.data_home()
-    return [p for p in (*(home / f for f in EXTRA_FILES), *(home / d for d in EXTRA_DIRS))
-            if p.exists()]
-
-
 def _connect(path: Path, *, readonly: bool = False) -> sqlite3.Connection:
-    """A connection with sqlite-vec loaded when it can be, so virtual tables
-    the stores use are understood by integrity checks."""
+    """A connection with sqlite-vec loaded when it can be, so the virtual
+    tables the stores use are understood. Read-only opens never create a
+    missing file and never change an existing one."""
+    from . import store
+
     if readonly:
-        from urllib.parse import quote
-        db = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True, timeout=60)
+        db = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True,
+                             timeout=store.BUSY_TIMEOUT)
     else:
-        db = sqlite3.connect(path, timeout=60)
+        db = sqlite3.connect(path, timeout=store.BUSY_TIMEOUT)
     try:
         import sqlite_vec
 
@@ -164,13 +170,57 @@ def _integrity(db: sqlite3.Connection, quick: bool = False) -> str:
     return "ok" if text == "ok" else text
 
 
+def _views(db: sqlite3.Connection) -> dict:
+    """The index holds each chunk three times: the row, its full-text entry
+    and its vector. Counted in one read transaction, so a writer committing
+    in between cannot make them look different."""
+    views: dict = {}
+    names = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
+    if "chunks" not in names:
+        return views
+    db.execute("BEGIN")
+    try:
+        views["chunks"] = db.execute("SELECT count(*) FROM chunks").fetchone()[0]
+        if "fts_chunks_docsize" in names:
+            views["fulltext"] = db.execute(
+                "SELECT count(*) FROM fts_chunks_docsize").fetchone()[0]
+        if "vec_chunks" in names:
+            try:
+                views["vectors"] = db.execute("SELECT count(*) FROM vec_chunks").fetchone()[0]
+            except sqlite3.OperationalError:
+                views["vectors"] = None  # sqlite-vec not loadable here
+        if "vec_chunks_new" in names:
+            views["reembed_in_progress"] = True
+    finally:
+        db.rollback()
+    return views
+
+
+def _view_problems(name: str, views: dict) -> list[tuple[str, str]]:
+    out = []
+    chunks = views.get("chunks")
+    if chunks is None:
+        return out
+    if views.get("fulltext") is not None and views["fulltext"] != chunks:
+        out.append((f"{name}:fulltext",
+                    f"{name}: {chunks} chunks but {views['fulltext']} full-text entries"))
+    if views.get("vectors") is not None and views["vectors"] != chunks:
+        out.append((f"{name}:vectors",
+                    f"{name}: {chunks} chunks but {views['vectors']} vectors"))
+    return out
+
+
 def describe(path: Path, *, quick: bool = False, readonly: bool = True) -> dict:
-    """Size, integrity and row counts. A backup's copy is opened read-only so
-    checking it can never change it."""
+    """Size, integrity, row counts and, for the index, its three views.
+    A backup's copy is opened read-only so checking it never changes it."""
     db = _connect(path, readonly=readonly)
     try:
-        return {"bytes": path.stat().st_size, "integrity": _integrity(db, quick),
+        info = {"bytes": path.stat().st_size, "integrity": _integrity(db, quick),
                 "tables": _tables(db)}
+        views = _views(db)
+        if views:
+            info["views"] = views
+        return info
     finally:
         db.close()
 
@@ -181,11 +231,22 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9.]+", "-", text.lower()).strip("-")[:48] or "backup"
 
 
+@contextlib.contextmanager
 def _lock():
     from .trigger import _exclusive
 
-    config.ensure_data_home()
-    return _exclusive(config.data_home() / ".backup.lock", timeout=LOCK_TIMEOUT)
+    try:
+        config.ensure_data_home()
+        held = _exclusive(config.data_home() / ".backup.lock", timeout=LOCK_TIMEOUT)
+        acquired = held.__enter__()
+    except _FAILURES as exc:
+        raise BackupError(f"cannot take the backup lock: {exc}") from exc
+    try:
+        if not acquired:
+            raise BackupError("another backup of this data home is still running")
+        yield
+    finally:
+        held.__exit__(None, None, None)
 
 
 def _private_dir(path: Path) -> None:
@@ -195,29 +256,68 @@ def _private_dir(path: Path) -> None:
 
 
 def _copy_db(src: Path, dst: Path) -> None:
-    """A consistent copy through SQLite's backup API: one step, so the copy is
-    a single moment of the source even while other processes write to it."""
-    source = sqlite3.connect(src, timeout=60)
-    target = sqlite3.connect(dst)
+    """A consistent copy through SQLite's backup API, in one step so the copy
+    is a single moment of the source. The source is opened read-only: a
+    store that vanished raises instead of being copied as an empty one."""
+    from . import store
+
+    source = sqlite3.connect(f"file:{quote(str(src))}?mode=ro", uri=True,
+                             timeout=store.BUSY_TIMEOUT)
     try:
-        source.backup(target)
+        target = sqlite3.connect(dst, timeout=store.BUSY_TIMEOUT)
+        try:
+            source.backup(target)
+        finally:
+            target.close()
     finally:
-        target.close()
         source.close()
     config.secure_file(dst)
 
 
-def snapshot(reason: str, *, manual: bool = False, label: str | None = None) -> Path | None:
+def _copy_tree(src: Path, dst: Path, *, only_missing: bool = False) -> int:
+    """Copy a queue directory file by file. Files can be uploaded and removed
+    while this runs; those, and partial (hidden or ``.part``) files, are
+    skipped. Returns how many files were copied."""
+    copied = 0
+    for folder, _dirs, files in os.walk(src):
+        base = Path(folder)
+        target = dst / base.relative_to(src)
+        _private_dir(target)
+        for name in files:
+            if name.startswith(".") or name.endswith(".part"):
+                continue
+            dest = target / name
+            if only_missing and dest.exists():
+                continue
+            try:
+                shutil.copy2(base / name, dest)
+            except FileNotFoundError:
+                continue
+            config.secure_file(dest)
+            copied += 1
+    return copied
+
+
+def snapshot(reason: str, *, kind: str = "operation",
+             label: str | None = None) -> Path | None:
     """Back up every store in the data home; return the backup's directory,
-    or None when there is nothing to back up. Raises BackupError."""
-    with _lock() as held:
-        if not held:
-            raise BackupError("another backup of this data home is still running")
-        return _snapshot(reason, manual=manual, label=label)
+    or None when there is nothing to back up. ``kind`` is ``operation``,
+    ``upgrade`` or ``manual`` (never pruned). Raises BackupError."""
+    with _lock():
+        return _snapshot(reason, kind=kind, label=label)
 
 
-def _snapshot(reason: str, *, manual: bool, label: str | None) -> Path | None:
-    files, extras = stores(), _extras()
+def _snapshot(reason: str, *, kind: str, label: str | None) -> Path | None:
+    try:
+        return _snapshot_unlocked(reason, kind=kind, label=label)
+    except BackupError:
+        raise
+    except _FAILURES as exc:
+        raise BackupError(f"{type(exc).__name__}: {exc}") from exc
+
+
+def _snapshot_unlocked(reason: str, *, kind: str, label: str | None) -> Path | None:
+    files = stores()
     if not files:
         return None
     base = root()
@@ -244,30 +344,36 @@ def _snapshot(reason: str, *, manual: bool, label: str | None) -> Path | None:
     _private_dir(work)
 
     entries: dict[str, dict] = {}
+    damaged = []
     try:
         for path in files:
             copy = work / path.name
             _copy_db(path, copy)
-            info = describe(copy)
+            try:
+                info = describe(copy)
+            except sqlite3.DatabaseError as exc:
+                info = {"bytes": copy.stat().st_size, "integrity": str(exc), "tables": {}}
             if info["integrity"] != "ok":
-                raise BackupError(f"the copy of {path.name} failed its integrity "
-                                  f"check ({info['integrity']}); the live store may "
-                                  "be damaged — run `agent-history backup check`")
+                damaged.append(f"{path.name} ({info['integrity']})")
             entries[path.name] = {**info, "sha256": _sha256(copy)}
-        copied = []
-        for extra in extras:
-            target = work / extra.name
-            if extra.is_dir():
-                shutil.copytree(extra, target)
-            else:
-                shutil.copy2(extra, target)
-                config.secure_file(target)
-            copied.append(extra.name)
+        extras = []
+        token = config.data_home() / TOKEN_FILE
+        if token.exists():
+            shutil.copy2(token, work / TOKEN_FILE)
+            config.secure_file(work / TOKEN_FILE)
+            extras.append(TOKEN_FILE)
+        for box in OUTBOXES:
+            source = config.data_home() / box
+            if source.is_dir():
+                _copy_tree(source, work / box)
+                extras.append(box)
         manifest = {
             "format": 1, "name": final.name, "reason": reason, "label": label,
-            "manual": manual, "created": when.isoformat(timespec="microseconds"),
+            "kind": kind, "manual": kind == "manual",
+            "created": when.isoformat(timespec="microseconds"),
             "version": __version__, "host": socket.gethostname(),
-            "data_home": str(config.data_home()), "files": entries, "extras": copied,
+            "data_home": str(config.data_home()), "files": entries, "extras": extras,
+            "damaged": damaged,
         }
         manifest_path = work / MANIFEST
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -276,7 +382,11 @@ def _snapshot(reason: str, *, manual: bool, label: str | None) -> Path | None:
     except BaseException:
         shutil.rmtree(work, ignore_errors=True)
         raise
-    if not manual:
+    if damaged:
+        print(f"WARNING: backup {final.name}: the copy of {', '.join(damaged)} failed "
+              "its integrity check — the live store is probably damaged. It was kept "
+              "as it is; run `agent-history backup check`.", file=sys.stderr)
+    if kind != "manual":
         prune()
     return final
 
@@ -288,6 +398,10 @@ def read_manifest(path: Path) -> dict:
         return json.loads((path / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise BackupError(f"{path} is not a backup (no readable {MANIFEST}: {exc})") from None
+
+
+def _kind(manifest: dict) -> str:
+    return manifest.get("kind") or ("manual" if manifest.get("manual") else "operation")
 
 
 def backups() -> list[tuple[Path, dict]]:
@@ -320,12 +434,16 @@ def resolve(name: str) -> Path:
     return path
 
 
-def prune(keep_count: int | None = None) -> list[Path]:
-    """Delete automatic backups beyond the newest ``keep_count``; backups made
-    by hand are never deleted here. Leftover partial copies go too."""
-    keep_count = keep() if keep_count is None else keep_count
-    automatic = [path for path, manifest in backups() if not manifest.get("manual")]
-    doomed = automatic[:-keep_count] if len(automatic) > keep_count else []
+def prune() -> list[Path]:
+    """Delete the oldest automatic backups: beyond the newest ``keep()`` made
+    before operations, and beyond the newest UPGRADE_KEEP made before a new
+    version's first write. Backups made by hand are never deleted here.
+    Leftover partial copies older than a day go too."""
+    found = backups()
+    doomed = []
+    for kind, limit in (("operation", keep()), ("upgrade", UPGRADE_KEEP)):
+        mine = [path for path, manifest in found if _kind(manifest) == kind]
+        doomed += mine[:-limit] if len(mine) > limit else []
     for path in doomed:
         shutil.rmtree(path, ignore_errors=True)
     base = root()
@@ -350,7 +468,10 @@ def verify(path: Path) -> list[str]:
         if _sha256(copy) != entry.get("sha256"):
             problems.append(f"{name}: changed since the backup was made (SHA-256 differs)")
             continue
-        state = describe(copy)["integrity"]
+        try:
+            state = describe(copy)["integrity"]
+        except sqlite3.DatabaseError as exc:
+            state = str(exc)
         if state != "ok":
             problems.append(f"{name}: integrity check failed ({state})")
     return problems
@@ -362,9 +483,14 @@ def verify(path: Path) -> list[str]:
 class Report:
     against: str | None = None
     problems: list[str] = field(default_factory=list)
+    codes: list[str] = field(default_factory=list)
     losses: list[str] = field(default_factory=list)
     changes: list[str] = field(default_factory=list)
     stores: dict[str, dict] = field(default_factory=dict)
+
+    def add(self, code: str, message: str) -> None:
+        self.codes.append(code)
+        self.problems.append(message)
 
     def ok(self, no_loss: bool = False) -> bool:
         return not self.problems and not (no_loss and self.losses)
@@ -374,71 +500,49 @@ class Report:
                 "losses": self.losses, "changes": self.changes, "stores": self.stores}
 
 
-def _index_views(path: Path, deep: bool) -> tuple[dict, list[str]]:
-    """The index holds each chunk three times: the row, its full-text entry
-    and its vector. They must agree."""
+def _fulltext_check(path: Path) -> str:
+    """FTS5's own check of the full-text index against the chunks."""
     db = _connect(path)
-    problems: list[str] = []
-    views: dict = {}
     try:
-        names = {row[0] for row in db.execute("SELECT name FROM sqlite_master")}
-        if "chunks" not in names:
-            return views, problems
-        views["chunks"] = db.execute("SELECT count(*) FROM chunks").fetchone()[0]
-        if "fts_chunks_docsize" in names:
-            views["fulltext"] = db.execute(
-                "SELECT count(*) FROM fts_chunks_docsize").fetchone()[0]
-            if views["fulltext"] != views["chunks"]:
-                problems.append(f"index.db: {views['chunks']} chunks but "
-                                f"{views['fulltext']} full-text entries")
-        if "vec_chunks" in names:
-            try:
-                views["vectors"] = db.execute(
-                    "SELECT count(*) FROM vec_chunks").fetchone()[0]
-            except sqlite3.OperationalError:
-                views["vectors"] = None  # sqlite-vec not loadable here
-            if views["vectors"] is not None and views["vectors"] != views["chunks"]:
-                problems.append(f"index.db: {views['chunks']} chunks but "
-                                f"{views['vectors']} vectors")
-        if "vec_chunks_new" in names:
-            views["reembed_in_progress"] = True
-        if deep and "fts_chunks" in names:
-            try:
-                db.execute("INSERT INTO fts_chunks(fts_chunks, rank) "
-                           "VALUES('integrity-check', 1)")
-                db.rollback()
-                views["fulltext_check"] = "ok"
-            except sqlite3.OperationalError as exc:
-                if "locked" in str(exc) or "busy" in str(exc):
-                    views["fulltext_check"] = "skipped (index busy)"
-                else:
-                    views["fulltext_check"] = str(exc)
-                    problems.append(f"index.db: full-text index check failed ({exc})")
-            except sqlite3.DatabaseError as exc:
-                views["fulltext_check"] = str(exc)
-                problems.append(f"index.db: full-text index check failed ({exc})")
+        db.execute("INSERT INTO fts_chunks(fts_chunks, rank) VALUES('integrity-check', 1)")
+        db.rollback()
+        return "ok"
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc) or "busy" in str(exc):
+            return "skipped (index busy)"
+        return str(exc)
+    except sqlite3.DatabaseError as exc:
+        return str(exc)
     finally:
         db.close()
-    return views, problems
 
 
-def check(*, against: str | Path | None = "latest", quick: bool = False) -> Report:
-    """Check the live stores, and compare their row counts with a backup
-    (``latest`` by default; None for no comparison)."""
+def check(*, against: str | Path | None = "latest", quick: bool = False,
+          only: tuple[str, ...] | None = None) -> Report:
+    """Check the live stores (``only`` some of them, by file name), and
+    compare their row counts with a backup (``latest`` by default; None for
+    no comparison)."""
     report = Report()
     for path in stores():
+        if only and path.name not in only:
+            continue
         try:
             info = describe(path, quick=quick, readonly=False)
         except sqlite3.DatabaseError as exc:
-            report.problems.append(f"{path.name}: cannot be read ({exc})")
+            report.add(f"{path.name}:integrity", f"{path.name}: cannot be read ({exc})")
             continue
         report.stores[path.name] = info
         if info["integrity"] != "ok":
-            report.problems.append(f"{path.name}: integrity check failed ({info['integrity']})")
-        if path.name == "index.db":
-            views, problems = _index_views(path, deep=not quick)
-            info["views"] = views
-            report.problems.extend(problems)
+            report.add(f"{path.name}:integrity",
+                       f"{path.name}: integrity check failed ({info['integrity']})")
+        for code, message in _view_problems(path.name, info.get("views") or {}):
+            report.add(code, message)
+        if not quick and "fulltext" in (info.get("views") or {}):
+            state = _fulltext_check(path)
+            info["views"]["fulltext_check"] = state
+            if state != "ok" and not state.startswith("skipped"):
+                report.add(f"{path.name}:fulltext-check",
+                           f"{path.name}: full-text index check failed ({state})")
 
     baseline = None
     if against is not None:
@@ -451,6 +555,8 @@ def check(*, against: str | Path | None = "latest", quick: bool = False) -> Repo
         manifest = read_manifest(baseline)
         report.against = manifest.get("name") or baseline.name
         for name, entry in manifest.get("files", {}).items():
+            if only and name not in only:
+                continue
             live = report.stores.get(name)
             if live is None:
                 report.losses.append(f"{name}: in the backup but missing now")
@@ -466,6 +572,16 @@ def check(*, against: str | Path | None = "latest", quick: bool = False) -> Repo
                     report.changes.append(f"{name}: {table} {before} → {after} "
                                           f"(+{after - before})")
     return report
+
+
+def _baseline_codes(path: Path) -> set[str]:
+    """Problem codes a backup already had when it was made."""
+    codes = set()
+    for name, entry in read_manifest(path).get("files", {}).items():
+        if entry.get("integrity") != "ok":
+            codes.add(f"{name}:integrity")
+        codes.update(code for code, _ in _view_problems(name, entry.get("views") or {}))
+    return codes
 
 
 def print_report(report: Report, *, no_loss: bool = False) -> None:
@@ -488,8 +604,7 @@ def print_report(report: Report, *, no_loss: bool = False) -> None:
             print("  no table changed size")
     for line in report.problems:
         print(f"PROBLEM: {line}")
-    state = "ok" if report.ok(no_loss) else "FAILED"
-    print(f"integrity: {state}")
+    print(f"integrity: {'ok' if report.ok(no_loss) else 'FAILED'}")
 
 
 # ------------------------------------------------------------------- automatic
@@ -505,42 +620,62 @@ def written_by() -> str | None:
         return None
 
 
-def guard_upgrade() -> Path | None:
-    """Back up the data home the first time this version writes to it.
+def _version_key(text: str | None) -> tuple:
+    """Comparable form of "0.20.0"; empty for a version it cannot read."""
+    parts = re.findall(r"\d+", text or "")
+    return tuple(int(p) for p in parts[:3]) if parts else ()
 
-    Cheap when the stamp already names this version (one small file read).
-    Raises BackupError when a needed backup cannot be made, so a new version
-    never changes a store it could not first copy."""
-    if written_by() == __version__ or not auto_enabled():
+
+def _needs_upgrade_backup(seen: str | None) -> bool:
+    """Only a version newer than every one that wrote here backs up: a
+    downgrade, or an older install sharing the data home with a newer one,
+    would otherwise copy everything on every switch."""
+    if seen == __version__:
+        return False
+    mine, theirs = _version_key(__version__), _version_key(seen)
+    return not theirs or not mine or mine > theirs
+
+
+def guard_upgrade() -> Path | None:
+    """Back up the data home the first time a newer version writes to it.
+
+    Cheap when nothing changed (one small file read). Raises BackupError when
+    a needed backup cannot be made, so a new version never changes a store
+    it could not first copy."""
+    if not auto_enabled() or not _needs_upgrade_backup(written_by()):
         return None
-    with _lock() as held:
-        if not held:
-            raise BackupError("another backup of this data home is still running")
+    with _lock():
         previous = written_by()
-        if previous == __version__:
+        if not _needs_upgrade_backup(previous):
             return None
         made = None
         if stores():
             made = _snapshot(f"before {__version__} (was {previous or 'unknown'})",
-                             manual=False, label=f"upgrade-to-{__version__}")
+                             kind="upgrade", label=f"upgrade-to-{__version__}")
             print(f"backup: {made} (first write by agent-history {__version__})",
                   file=sys.stderr)
         stamp = _stamp_path()
         tmp = stamp.with_name(f"{STAMP}.{os.getpid()}.tmp")
-        tmp.write_text(__version__ + "\n", encoding="utf-8")
-        os.replace(tmp, stamp)
+        try:
+            tmp.write_text(__version__ + "\n", encoding="utf-8")
+            os.replace(tmp, stamp)
+        except OSError as exc:
+            raise BackupError(f"cannot write the version stamp: {exc}") from exc
         return made
 
 
 @contextlib.contextmanager
-def guarded(reason: str):
+def guarded(reason: str, *, touches: tuple[str, ...] = ("index.db",),
+            erases: bool = False):
     """Back up before an operation that deletes or rewrites rows; check the
-    live data after it.
+    stores it ``touches`` after it.
 
     Yields the backup's path (None with AGENT_HISTORY_AUTO_BACKUP=0 or
     nothing to back up). A failed backup raises BackupError before the
-    operation starts; a failed check afterwards raises IntegrityError, naming
-    the backup to restore."""
+    operation starts. Afterwards, a problem the backup did not already have
+    raises IntegrityError naming the backup; one it had is only reported.
+    ``erases``: the operation removes data on purpose, so say where a copy
+    of it remains."""
     if not auto_enabled():
         yield None
         return
@@ -548,54 +683,56 @@ def guarded(reason: str):
     if made:
         print(f"backup: {made}", file=sys.stderr)
     yield made
-    report = check(against=made, quick=True)
-    if report.problems:
+    report = check(against=made, quick=True, only=touches)
+    known = _baseline_codes(made) if made else set()
+    new = [msg for code, msg in zip(report.codes, report.problems) if code not in known]
+    old = [msg for code, msg in zip(report.codes, report.problems) if code in known]
+    if new:
         raise IntegrityError(
-            "the data failed its check after " + reason + ":\n  "
-            + "\n  ".join(report.problems)
-            + (f"\nrestore the copy made just before with: agent-history backup "
-               f"restore {made.name} --yes" if made else ""))
+            "the data failed its check after " + reason + ":\n  " + "\n  ".join(new)
+            + (f"\nthe copy made just before is {made}; restore it with: "
+               f"agent-history backup restore {made.name} --yes" if made else ""))
+    for line in old:
+        print(f"warning: already so before {reason}: {line}", file=sys.stderr)
     lost = "; ".join(report.losses)
     print(f"integrity: ok{f' (removed: {lost})' if lost else ''}", file=sys.stderr)
-    if made and report.losses:
-        print(f"note: the removed rows are still in backup {made.name} and older "
-              "backups; delete those to erase them everywhere "
-              "(agent-history backup delete NAME --yes)", file=sys.stderr)
+    if made and (erases or report.losses):
+        print(f"note: what this removed is still in backup {made.name} (and any older "
+              "backups); to erase it everywhere: agent-history backup delete "
+              f"{made.name} --yes", file=sys.stderr)
 
 
 # --------------------------------------------------------------------- restore
 
 def restore(path: Path) -> Path | None:
     """Put a backup's stores back in place, after backing up what is there
-    now. The indexing lock is held so no run writes in between; readers see
-    the restored content through SQLite's own locking. Raises BackupError."""
+    now. Queued batches missing now are put back; the token file is not
+    (that would revive revoked or rotated tokens — copy it by hand if
+    needed). The indexing lock and the backup lock are held throughout, so
+    no run writes in between and no prune removes the backup mid-copy.
+    Raises BackupError."""
     from .trigger import _exclusive
 
-    problems = verify(path)
-    if problems:
-        raise BackupError("the backup is not intact; nothing was restored:\n  "
-                          + "\n  ".join(problems))
-    manifest = read_manifest(path)
     with _exclusive(config.lock_path(), timeout=LOCK_TIMEOUT) as held:
         if not held:
             raise BackupError("an indexing run holds the lock; retry when it finishes")
-        before = snapshot("before restoring " + path.name, manual=True,
-                          label=f"pre-restore-{path.name}") if stores() else None
-        home = config.ensure_data_home()
-        for name in manifest.get("files", {}):
-            _copy_db(path / name, home / name)
-        for name in manifest.get("extras", []):
-            source, target = path / name, home / name
-            if source.is_dir():
-                # Queued batches: put back any that are missing, keep the rest.
-                for item in source.rglob("*"):
-                    dest = target / item.relative_to(source)
-                    if item.is_dir():
-                        dest.mkdir(parents=True, exist_ok=True)
-                    elif not dest.exists():
-                        dest.parent.mkdir(parents=True, exist_ok=True)
-                        shutil.copy2(item, dest)
-            else:
-                shutil.copy2(source, target)
-                config.secure_file(target)
+        with _lock():
+            problems = verify(path)
+            if problems:
+                raise BackupError("the backup is not intact; nothing was restored:\n  "
+                                  + "\n  ".join(problems))
+            manifest = read_manifest(path)
+            before = (_snapshot("before restoring " + path.name, kind="manual",
+                                label=f"pre-restore-{path.name}") if stores() else None)
+            try:
+                home = config.ensure_data_home()
+                for name in manifest.get("files", {}):
+                    _copy_db(path / name, home / name)
+                for box in OUTBOXES:
+                    if box in manifest.get("extras", []) and (path / box).is_dir():
+                        _copy_tree(path / box, home / box, only_missing=True)
+            except _FAILURES as exc:
+                raise BackupError(
+                    f"restore failed part-way ({exc}); what was there before is in "
+                    f"{before}") from exc
     return before

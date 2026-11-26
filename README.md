@@ -628,10 +628,20 @@ rows than the backup recorded. Fewer rows is reported, and fatal with
 `--no-loss` — the check to run after an upgrade, when nothing should have
 been removed.
 
+A store whose copy fails the integrity check is still kept, flagged in the
+manifest with a warning: a damaged copy beats none, and one bad store never
+stops the others being saved. While a store is copied (seconds: about 3 s for
+400 MB), other processes keep reading it and their writes wait for it.
+`restore` puts back the stores and any queued batches that are missing now,
+but not the token file, which would revive revoked tokens; it stays in the
+backup if you need it.
+
 Backups live in `<data home>/backups/` (`AGENT_HISTORY_BACKUP_DIR` puts them
-on another disk). The newest five automatic ones are kept
-(`AGENT_HISTORY_BACKUP_KEEP`); ones you make by hand stay until you delete
-them. A backup is the same disk as the index unless you move it: it guards
+on another disk, in a folder per data home). The newest five made before an
+operation (`AGENT_HISTORY_BACKUP_KEEP`) and the newest two made before an
+upgrade are kept; ones you make by hand stay until you delete them. Only a
+version newer than any that wrote before makes an upgrade backup, so an
+older install sharing the data home does not. A backup is the same disk as the index unless you move it: it guards
 against a bad command or a bad upgrade, not a dead drive — copy
 `backups/` off the machine for that.
 
@@ -1400,7 +1410,7 @@ is no daemon, no server, and no separate process to keep alive.
 | `AGENT_HISTORY_SUPERSEDE_HINTS` | on | `0` turns off the "possibly superseded" hints everywhere |
 | `AGENT_HISTORY_AUTO_BACKUP` | on | `0` skips the automatic backups (see [Backups](#backups-and-integrity-checks)); the operation then runs without one |
 | `AGENT_HISTORY_BACKUP_DIR` | `$AGENT_HISTORY_HOME/backups` | Where backups go; each data home (tenant) gets its own folder there |
-| `AGENT_HISTORY_BACKUP_KEEP` | `5` | Automatic backups kept per data home; hand-made ones are never pruned |
+| `AGENT_HISTORY_BACKUP_KEEP` | `5` | Backups made before operations kept per data home (plus the last two made before upgrades); hand-made ones are never pruned |
 | `AGENT_HISTORY_STRICT` | – | `1` enables the compliance profile (injection off + hard project-scoped) |
 | `AGENT_HISTORY_REDACT` | off (on under strict) | `on` replaces secrets with typed markers at ingest; `off` forces verbatim even under strict. Never applies to `ship` (always redacts) or a hub (always on) |
 | `AGENT_HISTORY_MACHINE` | short hostname | This machine's name in a shared index |
