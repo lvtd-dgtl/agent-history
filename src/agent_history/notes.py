@@ -603,7 +603,7 @@ def search(query: str, *, k: int = 8, mode: str = "hybrid",
         # window, one machine) can reject a whole pool: fetch deeper until k
         # notes pass or the candidates run out. Unfiltered, the first pool
         # already holds k, so the ranking is what it always was.
-        pool, vector = max(k * 5, 25), None
+        pool, vector = min(max(k * 5, 25), _POOL_MAX), None
         while True:
             lists = []
             if mode in ("hybrid", "text"):
