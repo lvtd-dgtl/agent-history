@@ -153,9 +153,12 @@ def _record_as_hit(note: dict) -> dict:
 def _merge_records(results: list[dict], records: list[dict], k: int) -> list[dict]:
     """Interleave transcript hits and record notes by rank (each list scores
     1/(60+rank), transcripts first on a tie), dropping a record that is still
-    in the transcript index too, and re-number the ranks."""
+    in the transcript index too, and re-number the ranks. Facts lead, above
+    the k others, as they do in search."""
     if not records:
         return results
+    leading = [r for r in results if r.get("role") == facts.ROLE]
+    results = [r for r in results if r.get("role") != facts.ROLE]
     seen = {(r["session_id"], r["excerpt"][:120]) for r in results}
     scored = [(1.0 / (60 + i), 0, i, r) for i, r in enumerate(results)]
     for i, note in enumerate(records):
@@ -164,7 +167,8 @@ def _merge_records(results: list[dict], records: list[dict], k: int) -> list[dic
             continue
         scored.append((1.0 / (60 + i), 1, i, hit))
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
-    return [{**hit, "rank": rank} for rank, (_, _, _, hit) in enumerate(scored[:k], 1)]
+    merged = leading + [hit for _, _, _, hit in scored[:k]]
+    return [{**hit, "rank": rank} for rank, hit in enumerate(merged, 1)]
 
 
 def _require(identity: Identity | None, scope: str) -> Identity:
@@ -213,13 +217,14 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
         if notes == "exclude" and (not wanted or wanted == SURFACE):
             try:
                 record_hits = notes_store.search(query, k=k, mode=mode, records=True,
-                                                 cwd=cwd or None, machine=machine or None)
+                                                 cwd=cwd or None, machine=machine or None,
+                                                 window=window)
             except embed.EmbedError as exc:
                 raise ToolFailure(f"embedding unavailable ({exc}); "
                                   "retry with mode='text'") from None
         if notes != "exclude":
             try:
-                note_hits = notes_store.search(query, k=k, mode=mode)
+                note_hits = notes_store.search(query, k=k, mode=mode, window=window)
             except embed.EmbedError as exc:
                 raise ToolFailure(f"embedding unavailable ({exc}); "
                                   "retry with mode='text'") from None
@@ -228,7 +233,8 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
         elif not config.db_path().exists():
             # No transcript index for this tenant yet; curated facts still answer.
             wanted_agent = (agent or surface) or None
-            rows = (search.search_rows(query, k=k, agent=facts.AGENT, window=window)
+            rows = (search.search_rows(query, k=k, agent=facts.AGENT, window=window,
+                                       cwd=cwd or None, machine=machine or None)
                     if wanted_agent in (None, facts.AGENT) and sort == "relevance" else [])
         else:
             try:

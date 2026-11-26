@@ -172,3 +172,41 @@ def test_eval_scores_transcripts_not_facts(indexed, tmp_path, capsys):
     assert cli.main(["eval", path, "--mode", "text", "--json"]) == 0
     (result,) = json.loads(capsys.readouterr().out)["results"]
     assert result["ranks"] == [1], "a matching fact must not push the answer down"
+
+
+def test_token_edits_wait_for_each_other(tmp_path, monkeypatch):
+    import threading
+
+    path = tmp_path / "tokens.json"
+    monkeypatch.setenv("AGENT_HISTORY_MCP_TOKENS", str(path))
+    errors = []
+
+    def add(n):
+        try:
+            mcp_auth.add_token(f"t{n}", ["read"], "kim")
+        except Exception as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    threads = [threading.Thread(target=add, args=(n,)) for n in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert sorted(t["name"] for t in mcp_auth.list_tokens()) == [f"t{n}" for n in range(8)]
+
+
+def test_a_held_token_lock_refuses_instead_of_racing(tmp_path, monkeypatch):
+    from agent_history import trigger
+
+    path = tmp_path / "tokens.json"
+    monkeypatch.setenv("AGENT_HISTORY_MCP_TOKENS", str(path))
+    mcp_auth.add_token("router-read", ["read"], "kim")
+    before = path.read_text()
+    monkeypatch.setattr(mcp_auth, "EDIT_LOCK_TIMEOUT", 0.3)
+    with trigger._exclusive(path.with_name(f".{path.name}.lock")) as held:
+        assert held
+        with pytest.raises(mcp_auth.TokenConfigError, match="another token command"):
+            mcp_auth.rotate_token("router-read")
+    assert path.read_text() == before, "nothing was written while the lock was held"
+    assert mcp_auth.rotate_token("router-read")

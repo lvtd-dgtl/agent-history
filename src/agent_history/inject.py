@@ -100,7 +100,9 @@ def _run(stream) -> int:
     if not _worth_retrieving(prompt):
         return 0
 
-    db = store.open_for_read()
+    # Curated facts live beside the index, not in it: with no index yet
+    # there are no excerpts, but a fact can still be injected.
+    db = store.open_for_read() if config.db_path().exists() else None
     cutoff = config.inject_max_distance()
     cross = config.inject_cross_distance()
     session = payload.get("session_id") or ""
@@ -108,9 +110,11 @@ def _run(stream) -> int:
     strict = config.strict_enabled()
 
     try:
-        vector = embed.pack(embed.embed(prompt, timeout=EMBED_TIMEOUT))
+        vector = embed.pack(embed.embed(prompt, timeout=EMBED_TIMEOUT)) if db else None
     except embed.EmbedError:
-        rows = []  # no embedder, no excerpts; a curated fact needs none
+        vector = None  # no embedder, no excerpts; a curated fact needs none
+    if vector is None:
+        rows = []
     else:
         rows = [
             r for r in store.query(db, vector, FETCH)
@@ -168,7 +172,10 @@ def _current_facts(prompt: str, scope: str, strict: bool) -> list[dict]:
 
 def _hints(rows: list[tuple], current: list[dict]) -> dict[int, str]:
     """Row index -> one warning line, for excerpts that a newer excerpt or a
-    current fact appears to replace."""
+    current fact appears to replace. None at all with
+    AGENT_HISTORY_SUPERSEDE_HINTS=0."""
+    if not supersede.enabled():
+        return {}
     hits = [facts.as_hit(f) for f in current] + [
         {"text": r[6], "timestamp": r[4], "session_id": r[2],
          "session_uid": r[8] if len(r) > 8 else None} for r in rows]
@@ -268,15 +275,23 @@ def _render(rows: list[tuple], cwd: str | None = None, *,
             hints: dict[int, str] | None = None) -> str:
     header = _header(cwd)
     parts = [header]
+    total = len(header)
     if facts_in_force:
+        # Facts go first, but inside the same budget as the excerpts: as many
+        # fact lines as fit, and no section at all if not even one does.
         lines = ["\nCurrent facts, curated by the user — the value in force now. "
                  "Where an excerpt below disagrees, the fact wins:"]
+        size = len(lines[0]) + 1
         for fact in facts_in_force:
             text = " ".join(facts.line(fact).split())
-            lines.append("- " + (text if len(text) <= FACT_CHARS
-                                 else text[:FACT_CHARS - 1] + "…"))
-        parts.append("\n".join(lines) + "\n")
-    total = sum(len(p) for p in parts)
+            entry = "- " + (text if len(text) <= FACT_CHARS else text[:FACT_CHARS - 1] + "…")
+            if total + size + len(entry) + 1 > MAX_TOTAL_CHARS:
+                break
+            lines.append(entry)
+            size += len(entry) + 1
+        if len(lines) > 1:
+            parts.append("\n".join(lines) + "\n")
+            total += size
     hints = hints or {}
     for i, (agent, _origin, session_id, cwd, timestamp, role, text, *_rest) in enumerate(rows):
         excerpt = text[:CHUNK_CHARS]

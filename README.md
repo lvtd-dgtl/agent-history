@@ -1161,8 +1161,7 @@ result) — the measures to watch when you change the model, the chunking, or
 $ cat queries.jsonl
 {"query": "why did we split the auth middleware", "expect": "session refresh"}
 {"query": "os error 11001 on the windows box", "expect": {"session": "4048cd58-..."}}
-{"query": "hub upgrade backup", "expect": [{"text": "pre-319d60d"}, {"text": "index.db 306 MB"}],
- "since": "2026-11-01"}
+{"query": "hub upgrade backup", "expect": [{"text": "pre-319d60d"}], "since": "2026-11-01"}
 $ agent-history eval queries.jsonl --mode all --recency 30d
 eval: 3 queries, k=10, index 38,412 chunks
 config            hit@1  recall@10     MRR

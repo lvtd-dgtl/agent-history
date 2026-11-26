@@ -437,7 +437,7 @@ def as_hit(fact: dict) -> dict:
         "distance": None, "score": None, "profile": None,
         "fact": {name: fact.get(name) for name in
                  ("fact_id", "subject", "predicate", "value", "valid_from",
-                  "valid_to", "previous", "source", "scope")},
+                  "valid_to", "previous", "source", "scope", "created_at")},
     }
 
 
@@ -689,9 +689,11 @@ def _json_row(fact: dict, *, current_flag: bool | None = None) -> dict:
 
 
 def print_history(found: list[dict], as_of: float | None) -> None:
-    for (_s, _p), chain in sorted(chains(found).items()):
+    for _key, chain in sorted(chains(found).items()):
         live = resolve(chain, as_of)
-        print(f"{chain[0]['subject']} · {chain[0]['predicate']}")
+        tenant = chain[0].get("tenant")
+        print(f"{chain[0]['subject']} · {chain[0]['predicate']}"
+              + (f"  [{tenant}]" if tenant and len({f.get('tenant') for f in found}) > 1 else ""))
         for fact in chain:
             mark = "*" if live and live["fact_id"] == fact["fact_id"] else " "
             value = fact["value"] if fact["value"] is not None else "(retired)"

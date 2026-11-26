@@ -587,10 +587,11 @@ def _vector_hits(db, query: str, limit: int) -> list[int]:
 
 def search(query: str, *, k: int = 8, mode: str = "hybrid",
            records: bool | None = None, cwd: str | None = None,
-           machine: str | None = None) -> list[dict]:
+           machine: str | None = None, window=None) -> list[dict]:
     """Notes only, best first. ``records``: True for history_record notes
     only, False for session notes only, None for both. ``cwd`` narrows
-    records to a project substring, ``machine`` to the delivering machine."""
+    records to a project substring, ``machine`` to the delivering machine,
+    ``window`` (a timeaxis.Window) to notes created inside it."""
     if mode not in MODES:
         raise NoteError(f"mode must be one of {', '.join(MODES)}")
     query = (query or "").strip()
@@ -620,6 +621,8 @@ def search(query: str, *, k: int = 8, mode: str = "hybrid",
             if cwd and cwd not in (hit.get("project") or ""):
                 continue
             if machine and hit["machine"] != machine:
+                continue
+            if window and not window.contains(hit.get("created_at") or ""):
                 continue
             out.append(hit)
             if len(out) >= k:

@@ -459,3 +459,77 @@ def test_a_facts_only_tenant_still_answers_search(tmp_path, monkeypatch, fake_em
     assert serve_ssh.run("kim", "search --json -- gateway host") == 0
     (row,) = json.loads(capsys.readouterr().out)
     assert row["role"] == "fact" and "kim-host" in row["text"]
+
+
+# --- edge cases found in review -----------------------------------------------------
+
+def test_a_tie_on_valid_from_goes_to_the_fact_created_later():
+    old = {**_row("f", "stale-local", "2026-06-01T00:00:00+00:00"),
+           "created_at": "2026-06-01T00:00:00+00:00"}
+    new = {**_row("0", "hub-correction", "2026-06-01T00:00:00+00:00", "kim"),
+           "created_at": "2026-06-02T00:00:00+00:00"}
+    hits = [facts.as_hit(old), {**facts.as_hit(new), "tenant": "kim"}]
+    assert hits[0]["fact"]["created_at"] == old["created_at"]
+    (kept,) = [h for h in facts.reconcile(hits)]
+    assert kept["fact"]["value"] == "hub-correction", \
+        "the larger fact id must not beat the later correction"
+
+
+def test_history_prints_facts_from_several_tenants(capsys):
+    rows = [_row("a", "X", "2026-01-01T00:00:00+00:00", "a"),
+            _row("b", "Y", "2026-06-01T00:00:00+00:00", "b")]
+    facts.print_history(rows, None)
+    out = capsys.readouterr().out
+    assert "db · host  [a]" in out and "db · host  [b]" in out
+
+
+def test_search_with_facts_but_no_index_yet(fake_embed, capsys):
+    assert not config.db_path().exists()
+    fact_cli("set", "gateway", "host", "10.0.0.9")
+    capsys.readouterr()
+    rows = search.search_rows("gateway host", mode="text")
+    assert [r["role"] for r in rows] == ["fact"]
+    assert "no transcript index yet" in capsys.readouterr().err
+    with pytest.raises(store.StoreError, match="no index"):
+        search.search_rows("nothing curated about this", mode="text")
+
+
+def _inject(prompt, capsys, cwd="/w"):
+    payload = io.StringIO(json.dumps({"session_id": "now", "cwd": cwd, "prompt": prompt}))
+    assert inject.run_hook(payload) == 0
+    out = capsys.readouterr().out
+    return json.loads(out)["hookSpecificOutput"]["additionalContext"] if out else ""
+
+
+def test_facts_inject_before_any_index_exists(fake_embed, monkeypatch, capsys):
+    monkeypatch.setenv("AGENT_HISTORY_INJECT", "1")
+    assert not config.db_path().exists()
+    fact_cli("set", "lvtd-fleet-1", "ssh", "linuxuser@100.103.244.8")
+    capsys.readouterr()
+    assert "linuxuser@100.103.244.8" in _inject("ssh to lvtd-fleet-1 please", capsys)
+
+
+@needs_vec
+def test_hints_off_also_silences_fact_warnings(indexed, monkeypatch, capsys):
+    monkeypatch.setenv("AGENT_HISTORY_INJECT", "1")
+    monkeypatch.setenv("AGENT_HISTORY_INJECT_MAX_DIST", "1000")
+    fact_cli("set", "linuxuser", "fleet ssh", "linuxuser@100.103.244.8", "--since", "2026-10-11")
+    capsys.readouterr()
+    on = _inject("ssh linuxuser fleet box login", capsys)
+    assert "\u26a0" in on, "the old address is flagged while hints are on"
+    monkeypatch.setenv("AGENT_HISTORY_SUPERSEDE_HINTS", "0")
+    off = _inject("ssh linuxuser fleet box login", capsys)
+    assert "linuxuser@100.103.244.8" in off and "⚠" not in off
+
+
+def test_the_facts_section_fits_the_size_budget():
+    base = len(inject._header("/x")) - len("/x")
+    long_cwd = "/" + "d" * (inject.MAX_TOTAL_CHARS - 100 - base - 1)
+    fact = facts.resolve([_row("a", "X", "2026-01-01T00:00:00+00:00")])
+    assert len(inject._header(long_cwd)) == inject.MAX_TOTAL_CHARS - 100
+    out = inject._render([], long_cwd, facts_in_force=[fact])
+    assert len(out) <= inject.MAX_TOTAL_CHARS
+    assert "Current facts" not in out
+    many = [fact] * 50
+    out = inject._render([], "/w", facts_in_force=many)
+    assert len(out) <= inject.MAX_TOTAL_CHARS and out.count("\n- ") >= 1

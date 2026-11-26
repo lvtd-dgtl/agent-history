@@ -28,6 +28,7 @@ Nothing in this module prints or logs a token.
 from __future__ import annotations
 
 import collections
+import contextlib
 import hashlib
 import hmac
 import json
@@ -267,10 +268,36 @@ def _read_raw(path: Path) -> list[dict]:
     return list(data.get("tokens", []))
 
 
+@contextlib.contextmanager
+def _editing(path: Path):
+    """Hold the token file's lock across a read-modify-write, so two token
+    commands at once cannot both start from the same contents: the second
+    write would undo the first, even bring back a rotated-out secret."""
+    from .trigger import _exclusive
+
+    if not path.parent.exists():
+        path.parent.mkdir(parents=True)
+        if not config.WINDOWS:
+            path.parent.chmod(0o700)
+    with _exclusive(path.with_name(f".{path.name}.lock"), timeout=EDIT_LOCK_TIMEOUT) as held:
+        if not held:
+            raise TokenConfigError(f"another token command is editing {path}; try again")
+        yield
+
+
+EDIT_LOCK_TIMEOUT = 10  # seconds to wait for another token command
+
+
 def add_token(name: str, scopes: list[str], tenant: str | None,
               machine: str | None = None, path: Path | None = None) -> str:
     """Create a token, store its hash, and return the token (shown once)."""
     path = path or tokens_path()
+    with _editing(path):
+        return _add_token(name, scopes, tenant, machine, path)
+
+
+def _add_token(name: str, scopes: list[str], tenant: str | None,
+               machine: str | None, path: Path) -> str:
     tokens = _read_raw(path)
     if any(t.get("name") == name for t in tokens):
         raise TokenConfigError(f"a token named {name!r} already exists; revoke it first")
@@ -296,6 +323,11 @@ def rotate_token(name: str, path: Path | None = None) -> str | None:
     working as soon as the file is replaced: a running server re-reads it.
     None when there is no such token."""
     path = path or tokens_path()
+    with _editing(path):
+        return _rotate_token(name, path)
+
+
+def _rotate_token(name: str, path: Path) -> str | None:
     tokens = _read_raw(path)
     for i, entry in enumerate(tokens):
         if entry.get("name") == name:
@@ -309,12 +341,13 @@ def rotate_token(name: str, path: Path | None = None) -> str | None:
 
 def revoke_token(name: str, path: Path | None = None) -> bool:
     path = path or tokens_path()
-    tokens = _read_raw(path)
-    kept = [t for t in tokens if t.get("name") != name]
-    if len(kept) == len(tokens):
-        return False
-    _write_file(path, kept)
-    return True
+    with _editing(path):
+        tokens = _read_raw(path)
+        kept = [t for t in tokens if t.get("name") != name]
+        if len(kept) == len(tokens):
+            return False
+        _write_file(path, kept)
+        return True
 
 
 def list_tokens(path: Path | None = None) -> list[dict]:

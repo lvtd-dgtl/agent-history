@@ -74,6 +74,13 @@ def search_rows(
                  if include_facts and agent in (None, facts.AGENT) else [])
     if agent == facts.AGENT:
         return fact_hits[:k]
+    if fact_hits and not config.db_path().exists():
+        # Facts live beside the index, not in it; before the first
+        # `agent-history index` they still answer. With no matching fact the
+        # store's "no index" error below says what to do.
+        print("note: no transcript index yet; showing curated facts only",
+              file=sys.stderr)
+        return fact_hits[:k]
 
     db = store.open_for_read(check_model=(mode != "text"))
     narrowing = {"cwd": cwd, "agent": agent, "machine": machine,

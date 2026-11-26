@@ -121,3 +121,28 @@ def test_recall_takes_a_window_and_a_half_life(hub):  # noqa: F811
     (only,) = data(late)["results"]
     assert only["session_id"] == "sess-late" and 0 < only["recency"] <= 1
     assert bad.is_error and "not a date" in text_of(bad)
+
+
+def test_a_facts_only_tenant_honours_cwd_and_machine(hub):  # noqa: F811
+    from agent_history import mcp_auth
+
+    token = mcp_auth.add_token("solo-read", ["read"], "solo")
+    with config.tenant_home("solo"):
+        facts.save(facts.build("gateway", "host", "alpha-host", scope="/work/alpha"))
+        facts.save(facts.build("gateway", "port", "8443"))
+        assert not config.db_path().exists()
+
+    async def call(client):
+        alpha = await client.call_tool("history_recall", {
+            "query": "gateway host port", "mode": "text", "cwd": "alpha"})
+        beta = await client.call_tool("history_recall", {
+            "query": "gateway host port", "mode": "text", "cwd": "beta"})
+        elsewhere = await client.call_tool("history_recall", {
+            "query": "gateway host port", "mode": "text", "machine": "pc2"})
+        return alpha, beta, elsewhere
+
+    alpha, beta, elsewhere = run_calls(token, call)
+    assert {r["fact"]["value"] for r in data(alpha)["results"]} == {"alpha-host", "8443"}
+    assert {r["fact"]["value"] for r in data(beta)["results"]} == {"8443"}, \
+        "a fact scoped to another project stays out"
+    assert data(elsewhere)["results"] == [], "the facts were made on another machine"
