@@ -7,13 +7,14 @@ import json
 import sys
 
 from . import (__version__, adapters, config, coverage, embed, index, inject,
-               recent, scrub, search, ship, show, store, sync, trigger, viewer)
+               recent, scrub, search, ship, show, store, sync, timeaxis, trigger,
+               viewer)
 
 COMMANDS = {"index", "reindex", "reembed", "search", "sources", "doctor",
             "datadir", "trigger", "show", "sessions", "serve", "inject", "docs",
             "purge", "strict", "scrub", "relabel", "ship", "ship-jobs", "confirm-indexed",
             "boat-export",
-            "serve-ssh", "mcp", "import", "notes", "sync", "notify"}
+            "serve-ssh", "mcp", "import", "notes", "sync", "notify", "fact", "eval"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -42,6 +43,8 @@ def _build_parser() -> argparse.ArgumentParser:
     pur.add_argument("--agent", help="delete chunks from one agent")
     pur.add_argument("--all", action="store_true", dest="everything",
                      help="delete the entire index (total destruction)")
+    pur.add_argument("--tenant", help="hub: purge this tenant's index (one "
+                                      "file per tenant under the tenants root)")
     pur.add_argument("--yes", action="store_true",
                      help="actually delete; without it, only previews the count")
 
@@ -239,6 +242,10 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="leave out chunks from this machine (repeatable)")
     find.add_argument("--tenant", help="hub tenant to search (default: all "
                                        "this key may read)")
+    _add_time(find)
+    find.add_argument("--recency", metavar="HALF-LIFE", type=_half_life,
+                      help="lean toward recent chunks: relevance x 0.5^(age / "
+                           "HALF-LIFE), e.g. 30d (default: off)")
     _add_where(find)
     find.add_argument("--full", action="store_true", help="print full chunk text")
     find.add_argument("--json", action="store_true", dest="as_json")
@@ -284,6 +291,62 @@ def _build_parser() -> argparse.ArgumentParser:
                      choices=["add", "remove", "list"])
     doc.add_argument("path", nargs="?", help="directory, for add/remove")
 
+    fct = sub.add_parser(
+        "fact", help="curated facts with valid time: the current value of a "
+                     "thing, and what it replaced")
+    fct_sub = fct.add_subparsers(dest="fact_command", required=True)
+    fset = fct_sub.add_parser("set", help="record a value (the old one stays "
+                                          "as history)")
+    fret = fct_sub.add_parser("retire", help="record that a value stopped "
+                                             "being true")
+    for target in (fset, fret):
+        target.add_argument("subject", help='what it is about, e.g. "lvtd-fleet-1"')
+        target.add_argument("predicate", help='which property, e.g. "ssh"')
+        if target is fset:
+            target.add_argument("value")
+            target.add_argument("--scope", metavar="DIR",
+                                help="only true inside this directory tree "
+                                     "(default: everywhere)")
+        target.add_argument("--since", metavar="WHEN", type=_when,
+                            help="when it became true (default: now)")
+        target.add_argument("--source", help="where it came from: a session id, "
+                                             "URL, ticket")
+    fget = fct_sub.add_parser("get", help="the value in force now (or --as-of)")
+    fget.add_argument("subject")
+    fget.add_argument("predicate", nargs="?")
+    flist = fct_sub.add_parser("list", help="every fact in force")
+    for target in (fget, flist):
+        target.add_argument("--as-of", dest="as_of", metavar="WHEN", type=_when,
+                            help="as things stood then")
+        target.add_argument("--history", action="store_true",
+                            help="every value, oldest first; * marks the one in force")
+        target.add_argument("--json", action="store_true", dest="as_json")
+        target.add_argument("--tenant", help="hub tenant to read (default: all "
+                                             "this key may read)")
+        _add_where(target)
+    fforget = fct_sub.add_parser("forget", help="permanently delete a subject's "
+                                                "rows on this machine")
+    fforget.add_argument("subject")
+    fforget.add_argument("predicate", nargs="?")
+    fforget.add_argument("--yes", action="store_true",
+                         help="actually delete; without it, only previews the count")
+    fct_sub.add_parser("ship", help="upload queued facts to the hub")
+    fct_sub.add_parser("index", help="hub: store facts waiting in the inbox")
+
+    evl = sub.add_parser(
+        "eval", help="measure retrieval: hit@1, recall@k and MRR over a file "
+                     "of queries with known answers")
+    evl.add_argument("queries", help="JSONL: one {\"query\": ..., \"expect\": ...} "
+                                     "per line (see README)")
+    evl.add_argument("-k", type=int, default=10, help="depth to score (default 10)")
+    evl.add_argument("--mode", choices=(*search.MODES, "all"), default="hybrid",
+                     help="mode to score, or all three side by side")
+    evl.add_argument("--recency", metavar="HALF-LIFE", type=_half_life,
+                     help="score with this recency half-life too")
+    evl.add_argument("--json", action="store_true", dest="as_json")
+    evl.add_argument("--details", action="store_true",
+                     help="print each query's rank as well")
+
     mcp = sub.add_parser(
         "mcp", help="MCP server for history_recall / history_show / "
                     "history_record (needs the [mcp] extra)")
@@ -319,7 +382,10 @@ def _build_parser() -> argparse.ArgumentParser:
                                        "(omit on a hub without tenants)")
     tadd.add_argument("--machine", help="provenance for records written with "
                                         "this token (default mcp-<name>)")
-    mtok_sub.add_parser("list", help="names, scopes and tenants (no secrets)")
+    mtok_sub.add_parser("list", help="names, scopes, tenants and key age (no secrets)")
+    trot = mtok_sub.add_parser("rotate", help="replace a token's secret, keeping "
+                                              "its name, scopes and tenant")
+    trot.add_argument("name")
     trev = mtok_sub.add_parser("revoke", help="delete a token")
     trev.add_argument("name")
     return parser
@@ -345,6 +411,16 @@ def _cmd_mcp(args: argparse.Namespace) -> int:
             for entry in mcp_auth.list_tokens():
                 print(json.dumps(entry))
             return 0
+        if args.token_command == "rotate":
+            token = mcp_auth.rotate_token(args.name)
+            if token is None:
+                print(f"no token named {args.name!r}", file=sys.stderr)
+                return 1
+            print(token)
+            print(f"rotated {args.name!r}: the old secret stopped working now; "
+                  "the new one is shown only this once — update every client "
+                  "that used it (e.g. the router's env file)", file=sys.stderr)
+            return 0
         if mcp_auth.revoke_token(args.name):
             print(f"revoked {args.name!r}")
             return 0
@@ -362,6 +438,38 @@ def _add_where(parser: argparse.ArgumentParser) -> None:
                        const="local", help="only this machine's index")
     group.add_argument("--hub", dest="where", action="store_const",
                        const="hub", help="only the hub (AGENT_HISTORY_REMOTE)")
+
+
+def _add_time(parser: argparse.ArgumentParser) -> None:
+    """--since / --until / --as-of: a time window over chunk timestamps."""
+    parser.add_argument("--since", metavar="WHEN", type=_when,
+                        help="only chunks from then on: 2026-10-01, an ISO "
+                             "time, today/yesterday, or an age like 30d")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--until", metavar="WHEN", type=_when,
+                       help="only chunks up to then (a bare date includes "
+                            "the whole day)")
+    group.add_argument("--as-of", dest="as_of", metavar="WHEN", type=_when,
+                       help="the past as it stood then: --until, and facts "
+                            "as they were")
+
+
+def _when(value: str) -> str:
+    """Validate a date bound now (so errors are parser errors, and serve-ssh
+    refuses junk), but keep the text: "30d" means 30 days before *use*."""
+    try:
+        timeaxis.parse_bound(value, end=False)
+    except timeaxis.TimeError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return value
+
+
+def _half_life(value: str) -> str:
+    try:
+        timeaxis.parse_span(value)
+    except timeaxis.TimeError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return value
 
 
 def _port(value: str) -> int:
@@ -453,6 +561,22 @@ def _cmd_docs(action: str, path: str | None) -> int:
 
 
 def _cmd_purge(args) -> int:
+    tenant = getattr(args, "tenant", None)
+    if tenant:
+        # On a hub each tenant is its own index file; purge reaches exactly
+        # one, the same way search and the MCP server open one.
+        try:
+            config.tenant_dir(tenant)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        with config.tenant_home(tenant):
+            if not config.db_path().exists():
+                print(f"error: tenant {tenant!r} has no index here", file=sys.stderr)
+                return 1
+            print(f"tenant: {tenant}  ({config.data_home()})")
+            args.tenant = None
+            return _cmd_purge(args)
     try:
         db = store.open_for_maintenance()
     except store.StoreError as exc:
@@ -735,8 +859,15 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
                 parser.error("doctor --json needs --coverage")
             return _cmd_doctor()
         if args.command == "search":
+            try:
+                window, half_life = search.time_options(
+                    args.since, args.until, args.as_of, args.recency)
+            except timeaxis.TimeError as exc:
+                parser.error(str(exc))
             return search.run(
                 " ".join(args.query),
+                window=window,
+                recency=half_life,
                 k=args.k,
                 cwd=args.cwd,
                 agent=args.agent,
@@ -786,6 +917,14 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
             return viewer.run(port=args.port)
         if args.command == "mcp":
             return _cmd_mcp(args)
+        if args.command == "fact":
+            from . import facts
+            return facts.run(args)
+        if args.command == "eval":
+            from . import evaluate
+            return evaluate.run(args.queries, k=args.k, mode=args.mode,
+                                recency=args.recency, as_json=args.as_json,
+                                details=args.details)
         if args.command == "inject":
             if args.action == "run":
                 return inject.run_hook()

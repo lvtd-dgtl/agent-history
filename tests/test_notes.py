@@ -588,3 +588,19 @@ def test_cli_scrub_reads_the_pattern_from_stdin(fake_embed, monkeypatch, capsys)
     assert cli.main(["notes", "audit"]) == 0
     out = capsys.readouterr().out
     assert note["note_id"] in out and LEAK not in out
+
+
+def test_a_time_window_reaches_past_a_pool_of_newer_notes(fake_embed):
+    from agent_history import timeaxis
+
+    old = notes.build(title="deploy plan from spring", summary="deploy plan, first draft",
+                      source=code_source(), created_at="2026-03-01T00:00:00Z")
+    notes.save(old)
+    for n in range(40):
+        notes.save(notes.build(title=f"deploy plan update {n}",
+                               summary=f"deploy plan deploy plan, revision {n}",
+                               source=code_source(), created_at="2026-11-01T00:00:00Z"))
+    window = timeaxis.window(until="2026-06-01")
+    (hit,) = notes.search("deploy plan", k=1, mode="text", window=window)
+    assert hit["note_id"] == old["note_id"], "the in-window note is found past 40 newer ones"
+    assert len(notes.search("deploy plan", k=3, mode="text")) == 3

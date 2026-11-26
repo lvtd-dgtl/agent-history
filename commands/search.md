@@ -16,6 +16,8 @@ The user's goal is almost always **reconstructing project context on demand** �
 
 Useful flags: `-k N` for more results, `--full` for complete chunk text, `--cwd PATTERN` to scope to a project, `--agent NAME` to scope to one agent (claude-code, codex, opencode, hermes), `--mode text` for exact-identifier lookups (error codes, function names — also works when Ollama is down).
 
+Time: when the user asks for "the current"/"latest" state, add `--recency 30d` or `--since 90d`; when they ask how something stood at a date, use `--as-of YYYY-MM-DD`. A hit labelled `fact` is a curated current value (`agent-history fact get <subject> --history` shows what it replaced) — prefer it over older transcript hits. A hit with `⚠ possibly superseded` has a newer statement with a different host, address, key or version: say so rather than presenting the old value as current. When the user settles a value that changes over time (a host, a default, where something lives), offer `agent-history fact set <subject> <predicate> <value>`.
+
 To read the conversation around a promising hit, run `agent-history show <session_id-or-file>` (optionally `--around <timestamp>` from the hit) instead of parsing the raw transcript yourself — it works even when the source file was deleted.
 
 If the tool reports the index is empty, offer to run `agent-history index` first. If it reports a problem, `agent-history doctor` diagnoses it.

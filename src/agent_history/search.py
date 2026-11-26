@@ -12,14 +12,26 @@ Three modes:
 
 With `AGENT_HISTORY_REMOTE` set, results can also come from a hub: merged with
 the local ones when both exist, or hub-only when there is no local index.
+
+The time axis (all opt-in; default ranking is unchanged):
+
+- a window (``--since`` / ``--until`` / ``--as-of``) keeps only chunks
+  inside it, so ``--as-of <date>`` asks the past as it stood then;
+- ``--recency <half-life>`` multiplies each hit's relevance by
+  0.5^(age / half-life), so "current state of X" leans to recent statements;
+- curated facts (``facts``) the query names come first, as the value in force
+  at the end of the window;
+- hits that a newer hit appears to replace carry a ``superseded_hint``
+  (``supersede``).
 """
 from __future__ import annotations
 
-import datetime
 import json
 import sys
 
-from . import config, embed, remote, store
+import time
+
+from . import config, embed, facts, remote, store, supersede, timeaxis
 from .adapters.claude_code import AGENT as CLAUDE_AGENT, profile_of
 
 PREVIEW_CHARS = 600
@@ -45,11 +57,38 @@ def search_rows(
     sort: str = "relevance",
     machine: str | None = None,
     exclude_machine: list[str] | None = None,
+    window: timeaxis.Window | None = None,
+    recency: float | None = None,
+    include_facts: bool = True,
 ) -> list[dict]:
-    """Run one search and return result dicts — shared by the CLI and viewer."""
+    """Run one search and return result dicts — shared by the CLI and viewer.
+
+    ``window`` narrows to a time range; ``recency`` is a half-life in seconds
+    (None: off). Matching curated facts lead the list unless
+    ``include_facts`` is False; ``agent="fact"`` returns facts alone.
+    """
+    window = window or timeaxis.Window()
+    fact_hits = (_fact_hits(query, k=k, cwd=cwd, machine=machine,
+                            exclude_machine=exclude_machine, window=window,
+                            sort=sort)
+                 if include_facts and agent in (None, facts.AGENT) else [])
+    if agent == facts.AGENT:
+        return fact_hits[:k]
+    if fact_hits and not config.db_path().exists():
+        # Facts live beside the index, not in it; before the first
+        # `agent-history index` they still answer. With no matching fact the
+        # store's "no index" error below says what to do.
+        print("note: no transcript index yet; showing curated facts only",
+              file=sys.stderr)
+        return fact_hits[:k]
+
     db = store.open_for_read(check_model=(mode != "text"))
     narrowing = {"cwd": cwd, "agent": agent, "machine": machine,
-                 "exclude_machine": exclude_machine}
+                 "exclude_machine": exclude_machine, "window": window}
+    reweigh = recency is not None and sort == "relevance"
+    want = k
+    if reweigh:
+        k = max(k * 4, 40)  # a recent hit can only win if it was fetched
 
     if mode == "text":
         rows = [(*r, None, None) for r in store.text_query(db, query, k, **narrowing)]
@@ -73,7 +112,65 @@ def search_rows(
             else:
                 rows = store.hybrid_query(db, vector, query, k, **narrowing)
 
-    return _order([_as_dict(row) for row in rows], sort)
+    results = _order([_as_dict(row) for row in rows], sort)
+    if reweigh:
+        anchor = window.until if window.until is not None else time.time()
+        results = apply_recency(results, recency, anchor)
+    # Facts ride above the k transcript hits rather than taking their places.
+    return fact_hits + results[:want]
+
+
+def _fact_hits(query: str, *, k: int, cwd: str | None, machine: str | None,
+               exclude_machine: list[str] | None, window: timeaxis.Window,
+               sort: str) -> list[dict]:
+    """Curated facts the query names, in force at the end of the window.
+
+    Facts are global unless scoped; a ``--cwd`` narrowing keeps global facts
+    and facts scoped under a matching directory. Only relevance searches get
+    them first — a "newest" listing is about the conversation timeline.
+    """
+    if sort != "relevance":
+        return []
+    try:
+        pool = facts.rows()
+    except Exception:  # noqa: BLE001 - a broken facts file must not break search
+        return []
+    if not pool:
+        return []
+    local = config.machine_id()
+    if machine:
+        pool = [f for f in pool if (f.get("machine") or local) == machine]
+    if exclude_machine:
+        skip = set(exclude_machine)
+        pool = [f for f in pool if (f.get("machine") or local) not in skip]
+    if cwd:
+        # --cwd is a substring of a directory, as for chunks: global facts
+        # stay, scoped ones must have it in their scope.
+        pool = [f for f in pool if not f.get("scope") or cwd in f["scope"]]
+    found = facts.matching(query, as_of=window.until, facts=pool,
+                           limit=min(k, facts.SEARCH_LIMIT), any_scope=True)
+    return [facts.as_hit(fact) for _score, fact in found]
+
+
+def apply_recency(results: list[dict], half_life: float, anchor: float) -> list[dict]:
+    """Re-rank by relevance x 0.5^(age / half-life).
+
+    Relevance is the fused score where there is one, else a rank-derived
+    1/(60+rank) from the order the results arrived in (vector or BM25 order),
+    so every mode can be reweighted. Each result keeps that ``relevance`` and
+    its ``recency`` factor; ``score`` becomes their product. An undated chunk
+    weighs nothing. Ties keep the newer chunk first.
+    """
+    weighted = []
+    for rank, result in enumerate(results):
+        base = result["score"] if result.get("score") is not None else 1.0 / (60 + rank)
+        age = anchor - timeaxis.instant(result.get("timestamp"))
+        factor = timeaxis.decay(age, half_life)
+        weighted.append({**result, "relevance": base, "recency": round(factor, 4),
+                         "score": base * factor})
+    newest_first = sorted(weighted, key=lambda r: timeaxis.instant(r.get("timestamp")),
+                          reverse=True)
+    return sorted(newest_first, key=lambda r: -r["score"])
 
 
 def _order(results: list[dict], sort: str) -> list[dict]:
@@ -108,15 +205,17 @@ def _order(results: list[dict], sort: str) -> list[dict]:
 
 def _instant(timestamp: str) -> float:
     """A comparable epoch for an ISO timestamp of any stored flavour."""
-    if not timestamp:
-        return float("-inf")
-    try:
-        parsed = datetime.datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-    except ValueError:
-        return float("-inf")
-    if parsed.tzinfo is None:
-        parsed = parsed.astimezone()  # naive values were written in local time
-    return parsed.timestamp()
+    return timeaxis.instant(timestamp)
+
+
+def time_options(since: str | None = None, until: str | None = None,
+                 as_of: str | None = None, recency: str | None = None,
+                 ) -> tuple[timeaxis.Window, float | None]:
+    """The window and half-life (seconds) for user-supplied strings.
+    Raises timeaxis.TimeError with a message fit to print."""
+    window = timeaxis.window(since, until, as_of)
+    half_life = timeaxis.parse_span(recency) if recency else None
+    return window, half_life
 
 
 def run(
@@ -133,6 +232,8 @@ def run(
     as_json: bool = False,
     where: str | None = None,
     tenant: str | None = None,
+    window: timeaxis.Window | None = None,
+    recency: float | None = None,
 ) -> int:
     """``where`` is None (decide), "local", or "hub"."""
     side = _side(where, machine)
@@ -143,7 +244,8 @@ def run(
               "AGENT_HISTORY_REMOTE", file=sys.stderr)
         return 1
     options = dict(k=k, cwd=cwd, agent=agent, machine=machine,
-                   exclude_machine=exclude_machine, mode=mode, sort=sort)
+                   exclude_machine=exclude_machine, mode=mode, sort=sort,
+                   window=window or timeaxis.Window(), recency=recency)
 
     if side == "hub":
         return remote.passthrough(remote.search_args(
@@ -157,7 +259,10 @@ def run(
 
 def emit(results: list[dict], *, full: bool, as_json: bool) -> int:
     """Print results as JSON or the human format. A tenant is labelled only
-    when the results span more than one — one tenant is just "the index"."""
+    when the results span more than one — one tenant is just "the index".
+    Supersession hints are worked out here, over the final list, so a merged
+    local-and-hub result is compared as one list."""
+    results = supersede.annotate(results)
     if as_json:
         print(json.dumps([_trim(dict(r), full) for r in results], indent=2))
         return 0
@@ -237,7 +342,11 @@ def fuse(lists: list[list[dict]], *, sort: str, k: int) -> list[dict]:
             if key not in seen:
                 seen.add(key)
                 fused.append(result)
-    return _order(fused, sort)[:k]
+    fused = facts.reconcile(fused)
+    ordered = _order(fused, sort)
+    # Curated facts lead, above the k transcript hits, as in each list alone.
+    return ([r for r in ordered if r.get("role") == facts.ROLE]
+            + [r for r in ordered if r.get("role") != facts.ROLE][:k])
 
 
 _HUB_DEFAULTS = {"agent": "?", "file": "", "session_id": "",
@@ -288,7 +397,11 @@ def sub_label(row: dict) -> str:
 
 def _print_row(position: int, result: dict, full: bool,
                label_tenant: bool = False) -> None:
-    if result["score"] is not None:
+    if result.get("role") == facts.ROLE:
+        ranking = "fact"
+    elif result.get("recency") is not None and result["score"] is not None:
+        ranking = f"score={result['score']:.4f} rec×{result['recency']:.2f}"
+    elif result["score"] is not None:
         ranking = f"score={result['score']:.4f}"
     elif result["distance"] is not None:
         ranking = f"dist={result['distance']:.2f}"
@@ -303,12 +416,23 @@ def _print_row(position: int, result: dict, full: bool,
     # Tag only non-default Claude profiles, so ~/.claude output reads as before.
     profile = result.get("profile")
     tag = f"[{profile}]" if profile and profile != "claude" else ""
-    print(
-        f"#{position}  {ranking}  {timestamp}  "
-        f"{result['agent']}{tag}/{result['role']}{sub_label(result)}  "
-        f"{result['cwd'] or '?'}{where}"
-    )
-    print(f"    file: {result['file']}")
+    if result.get("role") == facts.ROLE:
+        since = timeaxis.local(result.get("timestamp"), 10)
+        print(f"#{position}  fact  since {since}  "
+              f"{result.get('cwd') or 'all projects'}{where}")
+    else:
+        print(
+            f"#{position}  {ranking}  {timestamp}  "
+            f"{result['agent']}{tag}/{result['role']}{sub_label(result)}  "
+            f"{result['cwd'] or '?'}{where}"
+        )
+    if result.get("role") == facts.ROLE and result.get("fact"):
+        print(f"    fact: agent-history fact get {_quoted(result['fact']['subject'])} "
+              "--history")
+    else:
+        print(f"    file: {result['file']}")
+    if result.get("superseded_hint"):
+        print(f"    \u26a0 {supersede.describe(result['superseded_hint'])}")
     text = result["text"]
     if full:
         print("    ---")
@@ -317,3 +441,8 @@ def _print_row(position: int, result: dict, full: bool,
     else:
         print(f"    {text[:PREVIEW_CHARS].replace(chr(10), ' ')}")
     print()
+
+
+def _quoted(text: str) -> str:
+    import shlex
+    return shlex.quote(text)

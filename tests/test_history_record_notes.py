@@ -247,3 +247,34 @@ def test_migrate_records_is_idempotent(hub, capsys):  # noqa: F811
         finally:
             db.close()
     assert "0 record(s)" in capsys.readouterr().out
+
+
+# ------------------------------------------------- time window, facts above k
+
+def test_until_keeps_records_written_later_out(hub):  # noqa: F811
+    data(write(hub))
+    index_hub(hub)
+    q = {"query": "hub MCP design scoped tokens", "mode": "text"}
+    now = data(read(hub, "history_recall", q))["results"]
+    assert any(h["role"] == "summary" for h in now)
+    before = data(read(hub, "history_recall", {**q, "until": "2026-06-01"}))["results"]
+    assert not any(h["role"] == "summary" for h in before), \
+        "a record created after `until` is outside the window"
+    notes_too = data(read(hub, "history_recall", {**q, "until": "2026-06-01",
+                                                  "notes": "include"}))["results"]
+    assert not any(h.get("origin") == "history_record" for h in notes_too)
+
+
+def test_facts_stay_above_k_when_records_match(hub):  # noqa: F811
+    from agent_history import facts
+
+    data(write(hub))
+    index_hub(hub)
+    with config.tenant_home("kim"):
+        facts.save(facts.build("hub MCP design", "tokens", "scoped, read and write"))
+    found = data(read(hub, "history_recall", {"query": "hub MCP design scoped tokens",
+                                              "mode": "text", "k": 1}))
+    roles = [h["role"] for h in found["results"]]
+    assert roles[0] == "fact" and len(roles) == 2, \
+        "the fact rides above the k=1 hit rather than taking its place"
+    assert [h["rank"] for h in found["results"]] == [1, 2]

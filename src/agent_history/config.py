@@ -447,6 +447,33 @@ def inject_max_distance() -> float:
         return 17.0
 
 
+def _span_env(name: str) -> float | None:
+    """Seconds in a span such as ``90d`` from an environment variable; None
+    when unset or unreadable (a hook must not fail on a typo)."""
+    from . import timeaxis
+
+    raw = (_env(name, "") or "").strip()
+    if not raw or raw.lower() in ("0", "off", "none"):
+        return None
+    try:
+        return timeaxis.parse_span(raw)
+    except timeaxis.TimeError:
+        return None
+
+
+def inject_recency() -> float | None:
+    """Half-life, in seconds, that reorders injection candidates toward
+    recent ones ($AGENT_HISTORY_INJECT_RECENCY, e.g. ``90d``). Off by default:
+    which chunks may be injected is still decided by the distance cutoff."""
+    return _span_env("AGENT_HISTORY_INJECT_RECENCY")
+
+
+def inject_max_age() -> float | None:
+    """Never inject a chunk older than this ($AGENT_HISTORY_INJECT_MAX_AGE,
+    e.g. ``365d``). Off by default."""
+    return _span_env("AGENT_HISTORY_INJECT_MAX_AGE")
+
+
 def inject_cross_distance() -> float:
     """Tighter cutoff for chunks OUTSIDE the current directory/project.
 

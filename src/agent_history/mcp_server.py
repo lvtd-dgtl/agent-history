@@ -34,8 +34,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from . import config, embed, redact, search, sessions, show, store
+from . import config, embed, facts, redact, search, sessions, show, store, supersede
 from . import notes as notes_store
+from . import timeaxis
 from .mcp_auth import Identity, RateLimiter, TokenStore, bearer
 
 SURFACE = "claude-ai-chat"
@@ -58,7 +59,8 @@ MAX_URL = 500
 MAX_PROJECT = 200
 
 TOOL_SCOPE = {"history_recall": "read", "history_show": "read",
-              "history_record": "write", "history_note": "write"}
+              "history_record": "write", "history_note": "write",
+              "history_fact": "write", "history_fact_get": "read"}
 NOTES_OPTIONS = ("exclude", "include", "only")
 
 _CHAT_URL = re.compile(
@@ -151,9 +153,12 @@ def _record_as_hit(note: dict) -> dict:
 def _merge_records(results: list[dict], records: list[dict], k: int) -> list[dict]:
     """Interleave transcript hits and record notes by rank (each list scores
     1/(60+rank), transcripts first on a tie), dropping a record that is still
-    in the transcript index too, and re-number the ranks."""
+    in the transcript index too, and re-number the ranks. Facts lead, above
+    the k others, as they do in search."""
     if not records:
         return results
+    leading = [r for r in results if r.get("role") == facts.ROLE]
+    results = [r for r in results if r.get("role") != facts.ROLE]
     seen = {(r["session_id"], r["excerpt"][:120]) for r in results}
     scored = [(1.0 / (60 + i), 0, i, r) for i, r in enumerate(results)]
     for i, note in enumerate(records):
@@ -162,7 +167,8 @@ def _merge_records(results: list[dict], records: list[dict], k: int) -> list[dic
             continue
         scored.append((1.0 / (60 + i), 1, i, hit))
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
-    return [{**hit, "rank": rank} for rank, (_, _, _, hit) in enumerate(scored[:k], 1)]
+    merged = leading + [hit for _, _, _, hit in scored[:k]]
+    return [{**hit, "rank": rank} for rank, hit in enumerate(merged, 1)]
 
 
 def _require(identity: Identity | None, scope: str) -> Identity:
@@ -179,8 +185,14 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
            agent: str | None = None, surface: str | None = None,
            cwd: str | None = None, machine: str | None = None,
            mode: str = "hybrid", sort: str = "relevance",
-           notes: str = "exclude") -> dict:
+           notes: str = "exclude", since: str | None = None,
+           until: str | None = None, recency: str | None = None) -> dict:
     identity = _require(identity, "read")
+    try:
+        window, half_life = search.time_options(since or None, until or None,
+                                                None, recency or None)
+    except timeaxis.TimeError as exc:
+        raise ToolFailure(str(exc)) from None
     if notes not in NOTES_OPTIONS:
         raise ToolFailure(f"notes must be one of {', '.join(NOTES_OPTIONS)}")
     query = (query or "").strip()
@@ -205,32 +217,43 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
         if notes == "exclude" and (not wanted or wanted == SURFACE):
             try:
                 record_hits = notes_store.search(query, k=k, mode=mode, records=True,
-                                                 cwd=cwd or None, machine=machine or None)
+                                                 cwd=cwd or None, machine=machine or None,
+                                                 window=window)
             except embed.EmbedError as exc:
                 raise ToolFailure(f"embedding unavailable ({exc}); "
                                   "retry with mode='text'") from None
         if notes != "exclude":
             try:
-                note_hits = notes_store.search(query, k=k, mode=mode)
+                note_hits = notes_store.search(query, k=k, mode=mode, window=window)
             except embed.EmbedError as exc:
                 raise ToolFailure(f"embedding unavailable ({exc}); "
                                   "retry with mode='text'") from None
-        if notes == "only" or not config.db_path().exists():
+        if notes == "only":
             rows: list[dict] = []
+        elif not config.db_path().exists():
+            # No transcript index for this tenant yet; curated facts still answer.
+            wanted_agent = (agent or surface) or None
+            rows = (search.search_rows(query, k=k, agent=facts.AGENT, window=window,
+                                       cwd=cwd or None, machine=machine or None)
+                    if wanted_agent in (None, facts.AGENT) and sort == "relevance" else [])
         else:
             try:
                 rows = search.search_rows(
                     query, k=k, cwd=cwd or None, agent=(agent or surface) or None,
-                    machine=machine or None, mode=mode, sort=sort)
+                    machine=machine or None, mode=mode, sort=sort,
+                    window=window, recency=half_life)
             except store.StoreError as exc:
                 raise ToolFailure(str(exc)) from None
             except embed.EmbedError as exc:
                 raise ToolFailure(f"embedding unavailable ({exc}); "
                                   "retry with mode='text'") from None
-        claude = _claude_ids({row.get("session_uid") or "" for row in rows[:k]})
+        # Facts ride above the k transcript hits (search_rows puts them first).
+        shown = len([r for r in rows if r.get("role") == facts.ROLE]) + k
+        rows = supersede.annotate(rows[:shown])
+        claude = _claude_ids({row.get("session_uid") or "" for row in rows})
 
     results = []
-    for rank, row in enumerate(rows[:k], 1):
+    for rank, row in enumerate(rows, 1):
         extra = ({"claude_session_ids": claude[row["session_uid"]]}
                  if row.get("session_uid") in claude else {})
         results.append({
@@ -251,6 +274,11 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             **({"sidechain": True, "agent_id": row.get("agent_id"),
                 "agent_type": row.get("agent_type")}
                if row.get("sidechain") or row.get("agent_id") else {}),
+            **({"recency": row["recency"]} if row.get("recency") is not None else {}),
+            **({"fact": row["fact"]} if row.get("fact") else {}),
+            **({"superseded_hint": row["superseded_hint"],
+                "warning": supersede.describe(row["superseded_hint"])}
+               if row.get("superseded_hint") else {}),
             **extra,
         })
     if notes == "exclude":
@@ -526,6 +554,63 @@ def note(identity: Identity | None, *, title: str, summary: str,
         "status": "queued: indexed into the notes store on the hub's next run",
         "redacted": dict(counter),
     }
+
+
+# -------------------------------------------------------------------- facts
+
+def fact(identity: Identity | None, *, subject: str, predicate: str,
+         value: str | None = None, retire: bool = False, since: str | None = None,
+         source: str | None = None, scope: str | None = None) -> dict:
+    """Record a curated fact (or retire one). Redacted, written to the
+    tenant's facts inbox, and stored on the hub's next indexing run."""
+    identity = _require(identity, "write")
+    if retire and value is not None:
+        raise ToolFailure("pass a value to set a fact, or retire=true, not both")
+    if not retire and (value is None or not str(value).strip()):
+        raise ToolFailure("value is required (or retire=true)")
+    counter: Counter = Counter()
+    try:
+        built = facts.build(subject, predicate, None if retire else value, since=since,
+                            source=source, scope=scope, author=f"mcp:{identity.name}")
+    except facts.FactError as exc:
+        raise ToolFailure(str(exc)) from None
+    written = facts.redacted(built, counter)
+    directory = _inbox_dir(identity) / facts.FACTS_DIR
+    if directory.is_symlink():
+        raise ToolFailure("refusing a symlinked facts directory")
+    try:
+        facts.write_file(directory, written)
+    except facts.FactError as exc:
+        raise ToolFailure(str(exc)) from None
+    return {"fact_id": written["fact_id"], "subject": written["subject"],
+            "predicate": written["predicate"], "value": written["value"],
+            "valid_from": written["valid_from"],
+            "status": "queued: stored on the hub's next indexing run",
+            "redacted": dict(counter)}
+
+
+def fact_get(identity: Identity | None, *, subject: str | None = None,
+             predicate: str | None = None, as_of: str | None = None,
+             history: bool = False) -> dict:
+    """The value in force for a subject (or every fact in force), as of now
+    or ``as_of``; ``history`` lists every value with the current one marked."""
+    identity = _require(identity, "read")
+    try:
+        moment = timeaxis.parse_bound(as_of, end=True) if as_of else None
+    except timeaxis.TimeError as exc:
+        raise ToolFailure(str(exc)) from None
+    with _tenant_index(identity.tenant):
+        found = facts.rows(subject or None, predicate or None)
+    def shape(row: dict) -> dict:
+        return {k: row.get(k) for k in ("fact_id", "subject", "predicate", "value",
+                                        "valid_from", "valid_to", "previous", "source",
+                                        "scope", "machine", "current") if k in row}
+    if history:
+        rows = [shape(r) for r in facts.history(found, moment)]
+    else:
+        rows = [shape({**r, "current": True}) for r in facts.current(found, moment)]
+    return {"count": len(rows), "as_of": timeaxis.iso(moment) if moment else None,
+            "facts": rows}
 
 
 # ---------------------------------------------------------------- MCP layer

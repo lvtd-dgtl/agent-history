@@ -578,8 +578,8 @@ def _text_hits(db, query: str, limit: int) -> list[int]:
     return out[:limit]
 
 
-def _vector_hits(db, query: str, limit: int) -> list[int]:
-    vector = embed.pack(embed.embed(query))
+def _vector_hits(db, query: str, limit: int, vector: bytes | None = None) -> list[int]:
+    vector = vector if vector is not None else embed.pack(embed.embed(query))
     rows = db.execute("SELECT rowid FROM vec_notes WHERE embedding MATCH ? AND k = ? "
                       "ORDER BY distance", (vector, limit)).fetchall()
     return [r[0] for r in rows]
@@ -587,10 +587,11 @@ def _vector_hits(db, query: str, limit: int) -> list[int]:
 
 def search(query: str, *, k: int = 8, mode: str = "hybrid",
            records: bool | None = None, cwd: str | None = None,
-           machine: str | None = None) -> list[dict]:
+           machine: str | None = None, window=None) -> list[dict]:
     """Notes only, best first. ``records``: True for history_record notes
     only, False for session notes only, None for both. ``cwd`` narrows
-    records to a project substring, ``machine`` to the delivering machine."""
+    records to a project substring, ``machine`` to the delivering machine,
+    ``window`` (a timeaxis.Window) to notes created inside it."""
     if mode not in MODES:
         raise NoteError(f"mode must be one of {', '.join(MODES)}")
     query = (query or "").strip()
@@ -598,35 +599,59 @@ def search(query: str, *, k: int = 8, mode: str = "hybrid",
         return []
     db, vectors = open_store(write=False)
     try:
-        pool = max(k * 5, 25)
-        scores: dict[int, float] = {}
-        lists = []
-        if mode in ("hybrid", "text"):
-            lists.append(_text_hits(db, query, pool))
-        if mode in ("hybrid", "vector") and vectors:
-            lists.append(_vector_hits(db, query, pool))
-        for ranked in lists:
-            for rank, rowid in enumerate(ranked):
-                scores[rowid] = scores.get(rowid, 0.0) + 1.0 / (60 + rank)
-        out = []
-        for rowid in sorted(scores, key=lambda r: -scores[r]):
-            row = db.execute(f"SELECT {_COLS} FROM notes n WHERE n.id = ?", (rowid,)).fetchone()
-            if not row:
-                continue
-            hit = _row(row, round(scores[rowid], 6))
-            is_record = hit.get("origin") == RECORD_ORIGIN
-            if records is not None and is_record != records:
-                continue
-            if cwd and cwd not in (hit.get("project") or ""):
-                continue
-            if machine and hit["machine"] != machine:
-                continue
-            out.append(hit)
-            if len(out) >= k:
-                break
-        return out
+        # The filters below run on ranked candidates, so a narrow one (an old
+        # window, one machine) can reject a whole pool: fetch deeper until k
+        # notes pass or the candidates run out. Unfiltered, the first pool
+        # already holds k, so the ranking is what it always was.
+        pool, vector = max(k * 5, 25), None
+        while True:
+            lists = []
+            if mode in ("hybrid", "text"):
+                lists.append(_text_hits(db, query, pool))
+            if mode in ("hybrid", "vector") and vectors:
+                if vector is None:
+                    vector = embed.pack(embed.embed(query))
+                lists.append(_vector_hits(db, query, pool, vector))
+            out = _ranked(db, lists, k, records=records, cwd=cwd, machine=machine,
+                          window=window)
+            if (len(out) >= k or all(len(ranked) < pool for ranked in lists)
+                    or pool >= _POOL_MAX):
+                return out
+            pool = min(pool * 4, _POOL_MAX)
     finally:
         db.close()
+
+
+_POOL_MAX = 4096  # sqlite-vec's limit on one nearest-neighbour query
+
+
+def _ranked(db, lists: list[list[int]], k: int, *, records, cwd, machine,
+            window) -> list[dict]:
+    """Fuse ranked candidate lists by reciprocal rank and keep the first k
+    that pass the filters."""
+    scores: dict[int, float] = {}
+    for ranked in lists:
+        for rank, rowid in enumerate(ranked):
+            scores[rowid] = scores.get(rowid, 0.0) + 1.0 / (60 + rank)
+    out = []
+    for rowid in sorted(scores, key=lambda r: -scores[r]):
+        row = db.execute(f"SELECT {_COLS} FROM notes n WHERE n.id = ?", (rowid,)).fetchone()
+        if not row:
+            continue
+        hit = _row(row, round(scores[rowid], 6))
+        is_record = hit.get("origin") == RECORD_ORIGIN
+        if records is not None and is_record != records:
+            continue
+        if cwd and cwd not in (hit.get("project") or ""):
+            continue
+        if machine and hit["machine"] != machine:
+            continue
+        if window and not window.contains(hit.get("created_at") or ""):
+            continue
+        out.append(hit)
+        if len(out) >= k:
+            break
+    return out
 
 
 def records_for_session(session: str, *, limit: int = 50) -> list[dict]:

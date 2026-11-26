@@ -112,6 +112,10 @@ def _anything_changed(stamp: Path) -> bool:
 
         if notes.inbox_pending():  # session notes waiting, a queue like the inbox
             return True
+        from . import facts
+
+        if facts.inbox_pending():  # curated facts waiting, likewise
+            return True
     since = stamp.stat().st_mtime
     from . import adapters
 
@@ -206,6 +210,12 @@ def run(label: str, *, if_changed: bool = False, foreground: bool = False,
                         notes.index_inbox()
                     except Exception as exc:  # noqa: BLE001
                         handle.write(f"notes index failed: {exc}\n")
+                    try:
+                        from . import facts
+
+                        facts.index_inbox()
+                    except Exception as exc:  # noqa: BLE001
+                        handle.write(f"facts index failed: {exc}\n")
             finally:
                 sys.stdout, sys.stderr = original
         config.secure_file(log)
@@ -228,6 +238,12 @@ def _ship_logged(log: Path) -> None:
             ship.run()
         except Exception as exc:  # noqa: BLE001 - a hook must never crash loudly
             handle.write(f"ship failed: {exc}\n")
+        try:
+            from . import facts
+
+            facts.ship_outbox()  # facts that could not go when they were set
+        except Exception as exc:  # noqa: BLE001
+            handle.write(f"facts ship failed: {exc}\n")
         finally:
             sys.stdout, sys.stderr = original
     config.secure_file(log)

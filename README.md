@@ -49,6 +49,13 @@ exact identifiers embeddings are bad at (`os error 11001`, a function name);
 the rankings are fused. `--mode text` needs no Ollama at all, and hybrid
 degrades to it gracefully when the embedder is down.
 
+**What was true when.** Search takes a time window (`--since`, `--until`,
+`--as-of`) and an opt-in recency half-life; curated **facts** keep the
+current value of a thing with what it replaced; and a hit that a newer hit
+appears to replace — a server moved, a version bumped — is flagged
+*possibly superseded*. All without a model:
+[details below](#what-was-true-when-the-time-axis).
+
 **The conversation, not just the hit.** `show` prints the conversation a
 search hit belongs to, and `serve` is a local web viewer over the same search
 — both read from the index, which matters because the source transcript
@@ -177,7 +184,15 @@ $ agent-history search "query" --mode vector   # embeddings only
 $ agent-history search "query" --sort newest   # chronological, not relevance
 $ agent-history search "query" --json       # machine-readable
 $ agent-history search "query" --machine laptop   # one machine's history
+$ agent-history search "query" --since 30d  # only the last 30 days
+$ agent-history search "query" --as-of 2026-09-01  # the past as it stood then
+$ agent-history search "query" --recency 30d       # lean toward recent chunks
 $ agent-history "query"                     # `search` is the default
+
+$ agent-history fact set lvtd-fleet-1 ssh linuxuser@100.103.244.8
+$ agent-history fact get lvtd-fleet-1 --history    # every value, current marked
+$ agent-history fact list                   # every fact in force
+$ agent-history eval queries.jsonl --mode all      # hit@1, recall@k, MRR
 
 $ agent-history sessions                    # the 20 most recently active sessions
 $ agent-history sessions -n 50 --cwd myapp  # more, from one directory (--json too)
@@ -199,6 +214,7 @@ $ agent-history index                       # incremental update (the default)
 $ agent-history reembed                     # switch embedding model, keep everything
 $ agent-history purge --cwd ~/clients/acme  # permanently delete matching chunks
 $ agent-history purge --all --yes           # total destruction
+$ agent-history purge --tenant kim --all    # hub: one tenant's index only
 $ agent-history reindex --force             # wipe and rebuild (destructive)
 $ agent-history sources                     # what will be scanned
 $ agent-history doctor                      # diagnose the installation
@@ -249,6 +265,104 @@ It exits 1 when a source lags or a transcript is empty or truncated (short
 stubs alone do not fail it), so it can run from cron. `--json` prints the full
 report, including every suspect file.
 
+## What was true when: the time axis
+
+Retrieval returns what was said, including things later changed: a host you
+moved off, a default you replaced, a decision you reversed. Both statements
+are in the index, both are genuinely relevant, and the older one can win on
+relevance outright. Four opt-in tools reason over time without summarising
+anything or running a model.
+
+**A time window.** `--since` and `--until` keep only chunks inside a range;
+`--as-of` is `--until` by its purpose — *ask the past as it stood then*.
+Values are an age (`12h`, `30d`, `2w`, `6mo`, `1y`), `today` / `yesterday`,
+a date (`2026-10-01`, local time; as an upper bound it includes the whole
+day), or an ISO time. An undated chunk is outside every bounded window.
+
+```console
+$ agent-history search "default model" --since 2026-10-01
+$ agent-history search "where does winch-bot run" --as-of 2026-07-01
+```
+
+**A recency half-life.** `--recency 30d` multiplies each hit's relevance by
+0.5^(age / 30 days), so "current state of X" leans to recent statements while
+a much stronger old hit can still win. It is off unless asked for — default
+ranking is unchanged — and each reweighted hit shows its factor
+(`score=0.0123 rec×0.42`). Hybrid scores sit in a narrow band (a hit both
+arms rank first scores only about twice one that a single arm ranks first),
+so one half-life of age outweighs most relevance gaps: start generous
+(`90d`–`180d`) and let [`eval`](#measuring-search-quality-eval) show whether a
+shorter one helps on your questions.
+
+**Possibly superseded.** Among one search's hits, an older hit is flagged
+when a newer hit from a different conversation states a different value for
+the same operational identifier and no longer mentions the old one:
+
+```text
+#3  score=0.0161  2026-08-01T10:14  claude-code/assistant  ~/fleet
+    file: ...
+    ⚠ possibly superseded: login host 45.76.1.5 -> 100.103.244.8 in a newer statement (#1, 2026-10-11)
+```
+
+It understands `ssh`/`scp`/`rsync` targets (same user, new host), IPv4
+addresses and `~/.ssh` key files (which must share a distinctive nearby word,
+such as the box's name), and `name 1.2.3` versions. Two hits from one session
+are never compared — one conversation legitimately names several hosts — and
+loopback, netmask and similar addresses are ignored. It is advisory: nothing
+is hidden or reordered, and the same warning reaches injected context, JSON
+(`superseded_hint`), the viewer and MCP. `AGENT_HISTORY_SUPERSEDE_HINTS=0`
+turns it off.
+
+**Curated facts.** A fact is an explicit statement of the current value of
+one thing — the "moved on <date>, use X now" lines a hand-kept memory file
+accumulates, made queryable:
+
+```console
+$ agent-history fact set lvtd-fleet-1 ssh linuxuser@45.76.1.5 --since 2026-08-01
+$ agent-history fact set lvtd-fleet-1 ssh linuxuser@100.103.244.8 --since 2026-10-11
+$ agent-history fact get lvtd-fleet-1
+lvtd-fleet-1 · ssh: linuxuser@100.103.244.8  (since 2026-10-11; was linuxuser@45.76.1.5 before)
+$ agent-history fact get lvtd-fleet-1 --as-of 2026-09-01
+lvtd-fleet-1 · ssh: linuxuser@45.76.1.5  (since 2026-08-01; until 2026-10-11)
+$ agent-history fact get lvtd-fleet-1 --history
+lvtd-fleet-1 · ssh
+    2026-08-01T00:00  linuxuser@45.76.1.5  (pc)  fact-…
+  * 2026-10-11T00:00  linuxuser@100.103.244.8  (pc)  fact-…
+$ agent-history fact retire winch-bot host       # no longer true, kept as history
+$ agent-history fact forget lvtd-fleet-1 --yes   # delete its rows on this machine
+```
+
+- **History, not overwrite.** Every `set` adds a row; the value in force is
+  the row with the latest `--since` at or before the moment asked about, so
+  back-dating a value never replaces a later one. Subjects and predicates
+  compare without case or spacing.
+- **First in search and injection.** A query that names a fact's subject
+  (all its words, or half of them plus a word of the predicate) gets the
+  current fact as hit #1, labelled `fact`, above the usual k transcript
+  hits; `--as-of` returns the fact as it was then, and `--agent fact` lists
+  facts alone. Context injection, stricter (the whole subject), puts current
+  facts ahead of excerpts and marks an excerpt that predates one. A fact can
+  be `--scope`d to a project directory (`--scope .` is stored as an absolute
+  path): injection then uses it only inside that tree, strict mode injects
+  only scoped facts, and search shows it with its scope (with `--cwd`, when
+  the scope contains that substring). Injected facts are capped at 300
+  characters each and count toward injection's size limit.
+- **Beside the index, never in it.** Facts live in `facts.db`, written only
+  by `fact set`/`retire` or the `history_fact` MCP tool. Nothing reads
+  transcripts to propose facts (a possible later, opt-in phase of #40).
+- **Raw here, redacted when shipped.** This machine keeps a fact as written
+  (redacted too when `AGENT_HISTORY_REDACT` or strict mode is on, as for the
+  index). With `AGENT_HISTORY_HUB_INGEST` set, a
+  fact's redacted copy is queued for the hub (`inbox/<tenant>/<machine>/facts/`,
+  beside session notes) and sent at once, or on the next `fact ship` or
+  hook run if the hub is unreachable; the hub redacts again. `fact get` and
+  `fact list` merge this machine's facts with the hub's when
+  `AGENT_HISTORY_REMOTE` is set (`--local` / `--hub` pin one side).
+
+All four apply over the hub too: the window and half-life travel to the hub
+as absolute UTC instants (so the hub's time zone does not matter), and are
+only sent when used, so an older hub still answers every other search.
+
 ## Context injection (on by default)
 
 A UserPromptSubmit hook embeds each prompt you type (locally, via Ollama),
@@ -293,6 +407,15 @@ asked for, so this is precision-first:
   elsewhere. The embedder can't know relevance, so this pairs a simple
   distance heuristic with the model's judgement. (Deliberate `search` stays
   fully cross-project; only automatic injection is scoped.)
+- **Curated facts first.** A current [fact](#what-was-true-when-the-time-axis)
+  whose whole subject the prompt names is injected ahead of the excerpts, as
+  the value in force, and an excerpt that a newer statement or a current fact
+  appears to replace carries a `⚠ possibly superseded` / `predates the current
+  fact` line — the agent sees the warning, not a bare stale value. Facts need
+  no embedder, so they still arrive when Ollama is down.
+- **Optional age limits.** `AGENT_HISTORY_INJECT_MAX_AGE=365d` never injects
+  an older excerpt; `AGENT_HISTORY_INJECT_RECENCY=90d` orders the candidates
+  that pass the cutoff by relevance x recency. Both are off by default.
 - Trivial prompts ("ok", "go ahead") and slash commands are skipped.
 - When Ollama is down, nothing is injected. Every failure path is a silent
   no-op — the hook can never break a prompt.
@@ -453,7 +576,10 @@ $ agent-history purge --all --yes              # total destruction
 ```
 
 `--cwd`, `--session`, and `--agent` are AND-combined; without `--yes` it only
-prints how many chunks *would* go. Deletion removes them from the vector and
+prints how many chunks *would* go. On a multi-tenant hub, `--tenant NAME`
+points any of them at that tenant's index file and no other (`purge --tenant
+kim --all --yes` erases a tenant's transcript index). Session notes, facts
+and the `.processed/` batches are separate stores; facts have `fact forget`. Deletion removes them from the vector and
 full-text indexes too. One caveat from content-hash dedup: identical text is
 stored once, attributed to its first-indexed source — so a surgical purge
 matches that stored attribution, and `--all` is the only guaranteed-complete
@@ -743,6 +869,13 @@ the optional extra: `uv tool install 'agent-history[mcp]'`.
 | `history_recall` | read | `query`, `k` (default 8, max 20), optional `agent` / `surface`, `cwd`, `machine`, `mode` (`hybrid`/`text`/`vector`), `sort`. Ranked hits: timestamp, agent, machine, project, session, role, score, a 700-character excerpt. Same `search_rows` as the CLI. |
 | `history_show` | read | `session` (from a hit), optional `around` (timestamp) and `limit` (default 20, max 50). The conversation, oldest first, 1500 characters per message. Same `rows_for` as `show`. |
 | `history_record` | write | `title`, `summary`, `decisions[]`, `findings[]`, `links[]`, `chat_url`, `project`. Saves a chat record and returns its id. |
+| `history_fact` | write | `subject`, `predicate`, `value` (or `retire: true`), optional `since`, `source`, `scope`. Records a [fact](#what-was-true-when-the-time-axis), redacted, into the tenant's facts inbox; stored on the hub's next indexing run. |
+| `history_fact_get` | read | Optional `subject`, `predicate`, `as_of`, `history`. The value in force (with what it replaced), every fact in force, or the full timeline. |
+
+`history_recall` also takes `since`, `until` (as of) and `recency` (a
+half-life), puts matching facts first (`role: fact`, with a `fact` object),
+and gives a hit that a newer hit appears to replace a `superseded_hint` and a
+one-line `warning`.
 
 **Records take the shipped path.** `history_record` builds one Record
 (agent `claude-ai-chat`, role `summary`, timestamp now, `cwd` = project),
@@ -769,11 +902,21 @@ without a restart. Tokens are never accepted in argv and never logged.
 $ agent-history mcp token add router-read  --scope read  --tenant kim
 ahmcp_...                                   # printed once; give it to the router
 $ agent-history mcp token add router-write --scope write --tenant kim --machine claude-ai
-$ agent-history mcp token list              # names, scopes, tenants; no secrets
+$ agent-history mcp token list              # names, scopes, tenants, key age; no secrets
+$ agent-history mcp token rotate router-read  # new secret, same name/scope/tenant
 $ agent-history mcp token revoke router-read
 $ agent-history mcp serve                   # http://127.0.0.1:8765/mcp
 $ agent-history mcp serve --stdio           # local testing; token from AGENT_HISTORY_MCP_TOKEN
 ```
+
+**Rotation.** `token rotate` replaces a token's secret in place and prints
+the new one once; the old secret stops working as soon as the file is
+written (a running server re-reads it). `token list` shows each token's
+`created` and `rotated` dates and its `age_days` since the last of them, so a
+key that was pasted somewhere it should not have been — or has simply been
+around too long — is visible. Tokens created before these dates were kept
+show no age: rotate them to start the clock. Update the router's env file
+with the new value right after rotating.
 
 For a single-tenant setup the tokens can come from the environment instead:
 `AGENT_HISTORY_MCP_READ_TOKEN` / `AGENT_HISTORY_MCP_WRITE_TOKEN` (32+
@@ -824,6 +967,10 @@ clients:
   - id: claude-ai
     roles: [operator, history-user]   # add to the client's existing roles
 ```
+
+The same two entries carry the fact tools: `history_fact_get` (read) on
+`history`, and `history_fact` (write) on `history-rec`, which needs its own
+`operations` line (`history_fact: create`) and a router refresh to appear.
 
 Put the two tokens in the router's environment file (`/etc/mcp-router/env`,
 `0600`), never in `router.yaml`, and restart the router (a `servers` change
@@ -1001,6 +1148,36 @@ Measured on the corpus above — 276 transcript files, 293 MB, 12,819 chunks:
 The vectors dominate the footprint: 768 float32 values is 3 KB per chunk no
 matter how short the text.
 
+## Measuring search quality: `eval`
+
+"It finds things" is an impression; `eval` makes it a number for *your*
+index. Write down questions whose answers you know are in your history, run
+them, and you get, per mode, **hit@1** (first result right), **recall@k** (a
+right result in the top k) and **MRR** (mean 1/rank of the first right
+result) — the measures to watch when you change the model, the chunking, or
+`--recency`.
+
+```console
+$ cat queries.jsonl
+{"query": "why did we split the auth middleware", "expect": "session refresh"}
+{"query": "os error 11001 on the windows box", "expect": {"session": "4048cd58-..."}}
+{"query": "hub upgrade backup", "expect": [{"text": "pre-319d60d"}], "since": "2026-11-01"}
+$ agent-history eval queries.jsonl --mode all --recency 30d
+eval: 3 queries, k=10, index 38,412 chunks
+config            hit@1  recall@10     MRR
+hybrid            0.667      1.000   0.778
+vector            0.333      0.667   0.444
+text              0.667      1.000   0.833
+hybrid+rec30d     ...
+```
+
+`expect` is a substring of the right hit's text, an object of `text` /
+`session` / `agent` / `file` that must all match, or a list of either (any
+one counts). A query may carry `cwd`, `agent`, `since` and `until`.
+`--details` prints each query's rank per configuration; `--json` the whole
+report. Queries run against this machine's index and go nowhere else; on a
+hub, run it as the hub user inside a tenant's data home.
+
 ## Architecture
 
 The whole tool is about 2,900 lines. The dependency graph is acyclic and
@@ -1132,6 +1309,9 @@ is no daemon, no server, and no separate process to keep alive.
 | `AGENT_HISTORY_INJECT` | – | `1`/`0` forces injection on/off (else on by default, off under strict) |
 | `AGENT_HISTORY_INJECT_MAX_DIST` | `17.0` | Injection cutoff for same-directory chunks (L2 distance) |
 | `AGENT_HISTORY_INJECT_CROSS_DIST` | `14.0` | Tighter cutoff for other-directory chunks (near-exact only) |
+| `AGENT_HISTORY_INJECT_MAX_AGE` | – | Never inject an excerpt older than this span, e.g. `365d` |
+| `AGENT_HISTORY_INJECT_RECENCY` | – | Order injection candidates by relevance x recency with this half-life, e.g. `90d` |
+| `AGENT_HISTORY_SUPERSEDE_HINTS` | on | `0` turns off the "possibly superseded" hints everywhere |
 | `AGENT_HISTORY_STRICT` | – | `1` enables the compliance profile (injection off + hard project-scoped) |
 | `AGENT_HISTORY_REDACT` | off (on under strict) | `on` replaces secrets with typed markers at ingest; `off` forces verbatim even under strict. Never applies to `ship` (always redacts) or a hub (always on) |
 | `AGENT_HISTORY_MACHINE` | short hostname | This machine's name in a shared index |
@@ -1222,6 +1402,18 @@ The posture that follows:
   otherwise make it world-readable on a shared machine. Never commit it;
   think twice before a synced or cloud-mounted `AGENT_HISTORY_HOME`; there is
   no encryption at rest — full-disk encryption is the answer.
+- **Facts follow the same rule.** `facts.db` (`0600`) keeps values as you
+  wrote them — often a host or a credential — unless local redaction is on,
+  and what is shipped to a hub is redacted, twice. `fact forget` deletes the
+  rows (SQLite `secure_delete`, so they do not linger in free pages) and any
+  copy still queued for the hub; a copy the hub already holds is deleted
+  there.
+- **Encryption at rest is the disk's job.** Neither `index.db`, `notes.db`
+  nor `facts.db` is encrypted by the tool. On a laptop that means full-disk
+  encryption; on a hub holding other people's history it means an encrypted
+  volume (LUKS, or the provider's encrypted block storage) for the tenants
+  root and the inbox, plus a backup that is itself encrypted. Purging a
+  tenant (`purge --tenant`) does not reach backups or `.processed/` batches.
 - **Nothing is sent off your machine by default.** A non-loopback
   `OLLAMA_URL` is refused unless you set `AGENT_HISTORY_ALLOW_REMOTE=1`,
   because pointing it elsewhere would stream your entire history there.
@@ -1272,6 +1464,17 @@ Deliberately out of scope: AI summarization and knowledge graphs. If you want
 compressed, curated memory, run a tool that does that — the two approaches
 compose fine, and this one guarantees the source material survives.
 
+**The cost of verbatim: stale statements come back too.** Retrieval returns
+what was said, including decisions later reversed, and nothing in a
+transcript says "this was overturned". A summarising tool can flag that, at
+the price of tokens and the original wording; this one cannot in general.
+What it does instead is narrower and honest about it: a [time
+window](#what-was-true-when-the-time-axis) and recency half-life you choose,
+heuristic *possibly superseded* hints for the identifiers that drift most
+(hosts, addresses, keys, versions), and curated facts for whatever you decide
+should have one current value. A reversed *decision* in prose is still yours
+to recognise.
+
 ## Roadmap
 
 The original roadmap — adapters for every agent found on this machine — is
@@ -1283,6 +1486,14 @@ complete. What remains is driven by use, and tracked in the
   router ([MCP server](#mcp-server-claudeai-and-other-mcp-clients), #28). A
   complement to injection, not a replacement: injection stays the ambient,
   zero-turn default; the tool is the deliberate, inspectable path.
+- [x] **Time-aware recall** (#40 phases 1–2, #24): `--since` / `--until` /
+  `--as-of`, an opt-in recency half-life, curated valid-time facts, and
+  "possibly superseded" hints for drifting identifiers
+  ([the time axis](#what-was-true-when-the-time-axis)). Still open from #40:
+  an opt-in pass that *proposes* facts from transcripts for review.
+- [x] **A number for search quality**: `agent-history eval` scores hit@1,
+  recall@k and MRR over your own queries
+  ([Measuring search quality](#measuring-search-quality-eval)).
 - [ ] **Self-calibrating injection cutoff** so a model swap can't silently
   mis-tune it (#13).
 - [ ] **CMMC/CUI hardening** — a strict-mode secret scrub and the rest of the
@@ -1333,7 +1544,14 @@ because it keeps working.
   [What it costs](#what-it-costs). It is a one-time cost.
 - Search quality is bounded by the embedding model. `nomic-embed-text` is a
   good default; `mxbai-embed-large` is slower and somewhat better. Changing
-  models is a `reembed` away and loses nothing.
+  models is a `reembed` away and loses nothing; `eval` tells you whether it
+  helped on your own questions.
+- Facts match a query by its words (no embedder), so a fact only leads a
+  search that names its subject. Supersession hints are heuristics over a
+  handful of identifier kinds, compared only among the hits of one search.
+- A time window narrows the nearest-neighbour candidates after the vector
+  scan (up to 4,096 of them); on a very large index, an `--as-of` far in the
+  past can return fewer than k hits even though older matches exist.
 
 ## Contributing
 

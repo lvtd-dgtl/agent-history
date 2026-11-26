@@ -7,7 +7,8 @@ In the hub's authorized_keys a read-only key looks like::
 sshd then runs this instead of whatever the client asked for, and hands the
 client's request over in ``$SSH_ORIGINAL_COMMAND``. This module is the whole
 gate: the request is split with ``shlex`` (never a shell), must start with
-``search`` or ``show``, and must parse under the normal CLI parser — so a
+``search``, ``show`` or a read-only ``fact get`` / ``fact list``, and must
+parse under the normal CLI parser — so a
 flag that does not exist, an ``index``, a ``purge``, a stray ``;`` as the
 command are all refused. Shell metacharacters inside a search are just query
 text, because nothing here ever runs a shell.
@@ -26,9 +27,10 @@ import shlex
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 
-from . import config, embed, search, show, store
+from . import config, embed, facts, search, show, store, timeaxis
 
-ALLOWED = ("search", "show")
+ALLOWED = ("search", "show", "fact")
+FACT_READS = ("get", "list")
 REJECTED = 2
 
 
@@ -66,7 +68,7 @@ def run(tenants_arg: str | None = None, command: str | None = None) -> int:
     except ValueError:
         return _reject("unparseable command")
     if not tokens or tokens[0] not in ALLOWED:
-        return _reject("only `search` and `show` are allowed")
+        return _reject("only `search`, `show` and `fact get|list` are allowed")
 
     parser = cli._build_parser()
     noise = io.StringIO()  # argparse prints usage to stderr; keep the reply short
@@ -76,7 +78,9 @@ def run(tenants_arg: str | None = None, command: str | None = None) -> int:
     except SystemExit:
         return _reject("invalid arguments")
     if args.command not in ALLOWED:
-        return _reject("only `search` and `show` are allowed")
+        return _reject("only `search`, `show` and `fact get|list` are allowed")
+    if args.command == "fact" and args.fact_command not in FACT_READS:
+        return _reject("only `fact get` and `fact list` are allowed")
 
     # Whatever the hub itself has configured, a request is answered from the
     # hub's own indexes, never forwarded onward.
@@ -93,26 +97,51 @@ def run(tenants_arg: str | None = None, command: str | None = None) -> int:
     try:
         if args.command == "search":
             return _search(args, scope)
+        if args.command == "fact":
+            return _fact(args, scope)
         return _show(args, scope)
+    except timeaxis.TimeError as exc:
+        return _reject(str(exc))
     except (store.StoreError, embed.EmbedError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
 
 
 def _search(args, scope: list[str]) -> int:
+    window, half_life = search.time_options(args.since, args.until, args.as_of,
+                                            args.recency)
     options = dict(k=args.k, cwd=args.cwd, agent=args.agent,
                    machine=args.machine, exclude_machine=args.exclude_machine,
-                   mode=args.mode, sort=args.sort)
+                   mode=args.mode, sort=args.sort, window=window,
+                   recency=half_life)
     lists = []
     for tenant in scope:
         with config.tenant_home(tenant):
             if not config.db_path().exists():
-                continue  # nothing shipped for this tenant yet
-            rows = search.search_rows(" ".join(args.query), **options)
+                # No transcripts shipped yet; its curated facts still answer.
+                if options["agent"] not in (None, facts.AGENT):
+                    continue
+                rows = search.search_rows(" ".join(args.query),
+                                          **{**options, "agent": facts.AGENT})
+            else:
+                rows = search.search_rows(" ".join(args.query), **options)
         lists.append([{**row, "tenant": tenant} for row in rows])
     results = (lists[0] if len(lists) == 1
                else search.fuse(lists, sort=args.sort, k=args.k))
     return search.emit(results, full=args.full, as_json=args.as_json)
+
+
+def _fact(args, scope: list[str]) -> int:
+    """Fact rows from each permitted tenant, labelled with it. Always the
+    hub's own rows (``where`` is pinned local above)."""
+    found = []
+    for tenant in scope:
+        with config.tenant_home(tenant):
+            subject = getattr(args, "subject", None)
+            found += [{**row, "tenant": tenant}
+                      for row in facts.rows(subject, getattr(args, "predicate", None))]
+    args.where = "local"
+    return facts.render(args, found)
 
 
 def _show(args, scope: list[str]) -> int:

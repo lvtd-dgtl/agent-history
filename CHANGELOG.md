@@ -12,6 +12,39 @@ they have no corresponding tags.
 ## [Unreleased]
 
 ### Added
+- **Time-aware search** (#40 phase 1). `search` takes `--since`, `--until`
+  and `--as-of` (an age like `30d`, `today`, a date, or an ISO time; a bare
+  date as an upper bound covers the whole day), and `--as-of` never returns a
+  newer chunk. `--recency <half-life>` reweights relevance by
+  0.5^(age / half-life) and shows each hit's factor; off by default, so
+  default ranking is unchanged. The same options reach the hub (as absolute
+  UTC instants, sent only when used), `history_recall` (`since`, `until`,
+  `recency`) and the viewer.
+- **Curated facts with valid time** (#40 phase 2). `agent-history fact
+  set|retire|get|list|forget|ship|index` keeps the current value of a thing
+  with the values it replaced, in `facts.db`; `get --as-of` walks back and
+  `--history` prints the timeline. Matching current facts lead search results
+  (role `fact`, above the k transcript hits) and context injection. Facts are
+  shipped redacted to `inbox/<tenant>/<machine>/facts/` and stored by the
+  hub's indexer; `fact get|list` merge the hub's with this machine's; MCP
+  gains `history_fact` (write) and `history_fact_get` (read); `serve-ssh`
+  allows read-only `fact get|list`.
+- **"Possibly superseded" hints** (#24). Among one search's hits, an older
+  hit is flagged when a newer hit from another session gives a different
+  ssh target, IPv4 address, `~/.ssh` key or `name x.y.z` version for the same
+  thing and no longer names the old one. Shown in CLI and JSON
+  (`superseded_hint`), the viewer, `history_recall` and injected context;
+  `AGENT_HISTORY_SUPERSEDE_HINTS=0` turns it off.
+- **Injection age controls.** `AGENT_HISTORY_INJECT_MAX_AGE` (never inject
+  older excerpts) and `AGENT_HISTORY_INJECT_RECENCY` (order candidates by
+  relevance x recency), both off by default. Current facts inject even when
+  the embedder is down.
+- **`agent-history eval`**: hit@1, recall@k and MRR over a JSONL file of
+  queries with known answers, per mode (`--mode all`) and optionally with a
+  recency half-life, against this machine's index.
+- **`agent-history mcp token rotate`** replaces a token's secret in place;
+  `token list` now shows `created`, `rotated` and `age_days`.
+- **`purge --tenant NAME`** reaches one tenant's index on a multi-tenant hub.
 - **Grok CLI adapter** (`grok`): reads `~/.grok/sessions/*/*/updates.jsonl`
   (WSL and Windows homes), joining ACP message chunks into messages. Never
   opens `auth.json`.
@@ -25,6 +58,12 @@ they have no corresponding tags.
 - Hermes profiles in the Windows home (`C:\Users\<you>\.hermes-t3`) are found
   from WSL; WAL databases on a Windows drive fall back to a private copy when
   they cannot be opened read-only in place.
+
+### Changed
+- `fact` and `eval` are subcommands now, so a bare query starting with
+  either word (`agent-history fact check auth`) needs `search` or quotes.
+- The README names the cost of verbatim recall — stale statements come back
+  too — and what the time axis does and does not do about it (#14).
 
 ### Fixed
 - **Every command reads `~/.config/agent-history/env`**, not only `sync`.
