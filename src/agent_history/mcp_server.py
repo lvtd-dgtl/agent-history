@@ -255,7 +255,8 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
 
     note_hits: list[dict] = []
     record_hits: list[dict] = []
-    wanted = agent or surface
+    # "a,b" is a list; "," or " " names no agent and narrows nothing.
+    wanted = store.agent_set(agent or surface)
     with _tenant_index(identity.tenant):
         # history_record entries live in the notes store now (piece D). The
         # default recall still returns them, in the shape they always had —
@@ -265,7 +266,7 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
                        and SURFACE not in search.make_filters(
                            exclude_agent=exclude_agent).exclude_agents)
         if (notes == "exclude" and records_fit
-                and (not wanted or SURFACE in store.agent_set(wanted))):
+                and (not wanted or SURFACE in wanted)):
             try:
                 record_hits = _record_hits(query, k=k, mode=mode, cwd=cwd or None,
                                            machine=machine or None, window=window,
@@ -284,16 +285,15 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             rows: list[dict] = []
         elif not config.db_path().exists():
             # No transcript index for this tenant yet; curated facts still answer.
-            wanted_agent = (agent or surface) or None
             rows = (search.search_rows(query, k=k, agent=facts.AGENT, window=window,
                                        cwd=cwd or None, machine=machine or None,
                                        **narrowing)
-                    if (not wanted_agent or facts.AGENT in store.agent_set(wanted_agent))
+                    if (not wanted or facts.AGENT in wanted)
                     and sort == "relevance" else [])
         else:
             try:
                 rows = search.search_rows(
-                    query, k=k, cwd=cwd or None, agent=(agent or surface) or None,
+                    query, k=k, cwd=cwd or None, agent=",".join(sorted(wanted)) or None,
                     machine=machine or None, mode=mode, sort=sort,
                     window=window, recency=half_life, **narrowing)
             except store.StoreError as exc:

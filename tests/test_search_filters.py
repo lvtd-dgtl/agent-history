@@ -336,3 +336,14 @@ def test_hub_only_search_with_an_agent_list(tmp_path, monkeypatch, capsys):
     assert _agents_sent(calls) == ["claude-code", "codex"]
     assert {r["agent"] for r in rows} == {"codex", "claude-code"}
     assert all("--per-session" in c for c in calls)
+
+
+def test_serve_ssh_an_empty_agent_list_keeps_a_facts_only_tenant(tmp_path, monkeypatch,
+                                                                fake_embed, capsys):
+    monkeypatch.setenv("AGENT_HISTORY_TENANTS", str(tmp_path / "tenants"))
+    with config.tenant_home("kim"):
+        facts.save(facts.build("gateway", "host", "kim-host"))
+    capsys.readouterr()
+    assert serve_ssh.run("kim", "search --json --agent , -- gateway host") == 0
+    (row,) = json.loads(capsys.readouterr().out)
+    assert row["fact"]["value"] == "kim-host"

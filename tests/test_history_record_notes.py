@@ -326,3 +326,13 @@ def test_records_fill_k_from_more_chats_when_the_cap_binds(hub):  # noqa: F811
     chats = [h["session"] for h in found["results"] if h["role"] == "summary"]
     assert len(chats) == 4 and len(set(chats)) == 4, \
         "the cap reaches past one chat's records to the others"
+
+
+def test_an_empty_agent_list_keeps_records(hub):  # noqa: F811
+    out = data(write(hub))
+    index_hub(hub)
+    q = {"query": "hub MCP design scoped tokens", "mode": "text"}
+    plain = data(read(hub, "history_recall", q))["results"]
+    empty = data(read(hub, "history_recall", {**q, "agent": ","}))["results"]
+    assert any(h["session_id"] == out["session"] for h in empty)
+    assert [h["session_id"] for h in empty] == [h["session_id"] for h in plain]

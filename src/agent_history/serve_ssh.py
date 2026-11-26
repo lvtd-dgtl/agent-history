@@ -121,7 +121,8 @@ def _search(args, scope: list[str]) -> int:
         with config.tenant_home(tenant):
             if not config.db_path().exists():
                 # No transcripts shipped yet; its curated facts still answer.
-                if options["agent"] and facts.AGENT not in store.agent_set(options["agent"]):
+                agents = store.agent_set(options["agent"])  # "," names none
+                if agents and facts.AGENT not in agents:
                     continue
                 rows = search.search_rows(" ".join(args.query),
                                           **{**options, "agent": facts.AGENT})
