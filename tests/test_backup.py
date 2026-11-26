@@ -471,3 +471,30 @@ def test_a_token_file_kept_elsewhere_is_backed_up(indexed, tmp_path, monkeypatch
     manifest = backup.read_manifest(made)
     assert manifest["token_path"] == str(tokens)
     assert (made / backup.TOKEN_FILE).read_text() == tokens.read_text()
+
+
+def test_restoring_an_upgrade_backup_puts_the_old_stamp_back(indexed, capsys):
+    stamp = config.data_home() / backup.STAMP
+    stamp.write_text("0.18.0\n")
+    db, _ = store.open_for_write()
+    db.close()
+    (made, manifest), = backup.backups()
+    assert manifest["written_by"] == "0.18.0"
+    assert stamp.read_text().strip() == __version__
+    assert cli.main(["backup", "restore", made.name, "--yes"]) == 0
+    assert stamp.read_text().strip() == "0.18.0"
+    db, _ = store.open_for_write()
+    db.close()
+    upgrades = [m for _p, m in backup.backups() if m.get("kind") == "upgrade"]
+    assert len(upgrades) == 2, "the next newer write copies the restored data first"
+    capsys.readouterr()
+
+
+def test_restoring_a_backup_without_a_known_writer_clears_the_stamp(indexed, capsys):
+    made = backup.snapshot("manual", kind="manual")
+    manifest = backup.read_manifest(made)
+    manifest.pop("written_by")
+    (made / backup.MANIFEST).write_text(json.dumps(manifest))
+    assert cli.main(["backup", "restore", made.name, "--yes"]) == 0
+    assert not (config.data_home() / backup.STAMP).exists()
+    capsys.readouterr()

@@ -379,6 +379,9 @@ def _snapshot_unlocked(reason: str, *, kind: str, label: str | None) -> Path | N
             "data_home": str(config.data_home()), "files": entries, "extras": extras,
             "damaged": damaged,
             "token_path": str(token) if TOKEN_FILE in extras else None,
+            # The version that wrote this data (the stamp at backup time), so
+            # a restore can put it back and the next newer write backs up again.
+            "written_by": written_by(),
         }
         manifest_path = work / MANIFEST
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -781,6 +784,16 @@ def restore(path: Path) -> Path | None:
                 for box in OUTBOXES:
                     if box in manifest.get("extras", []) and (path / box).is_dir():
                         _copy_tree(path / box, home / box, only_missing=True)
+                # The data is now as the backup's version wrote it: so is the
+                # stamp, or none when unknown, and a newer version's next
+                # write makes its safety copy again before migrating.
+                stamp = _stamp_path()
+                if manifest.get("written_by"):
+                    tmp = stamp.with_name(f"{STAMP}.{os.getpid()}.tmp")
+                    tmp.write_text(manifest["written_by"] + "\n", encoding="utf-8")
+                    os.replace(tmp, stamp)
+                else:
+                    stamp.unlink(missing_ok=True)
             except _FAILURES as exc:
                 raise BackupError(
                     f"restore failed part-way ({exc}); what was there before is in "
