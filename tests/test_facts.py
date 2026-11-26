@@ -533,3 +533,14 @@ def test_the_facts_section_fits_the_size_budget():
     many = [fact] * 50
     out = inject._render([], "/w", facts_in_force=many)
     assert len(out) <= inject.MAX_TOTAL_CHARS and out.count("\n- ") >= 1
+
+
+@needs_vec
+def test_facts_inject_when_the_index_was_built_with_another_model(indexed, monkeypatch,
+                                                                 capsys):
+    monkeypatch.setenv("AGENT_HISTORY_INJECT", "1")
+    fact_cli("set", "lvtd-fleet-1", "ssh", "linuxuser@100.103.244.8")
+    capsys.readouterr()
+    monkeypatch.setenv("AGENT_HISTORY_MODEL", "some-other-model")
+    context = _inject("ssh to lvtd-fleet-1 please", capsys)
+    assert "linuxuser@100.103.244.8" in context and "45.76.1.5" not in context

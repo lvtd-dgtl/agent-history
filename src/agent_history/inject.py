@@ -102,7 +102,14 @@ def _run(stream) -> int:
 
     # Curated facts live beside the index, not in it: with no index yet
     # there are no excerpts, but a fact can still be injected.
-    db = store.open_for_read() if config.db_path().exists() else None
+    db = None
+    if config.db_path().exists():
+        try:
+            db = store.open_for_read()
+        except store.StoreError:
+            # Built with another embedding model: no excerpts (vectors from
+            # different models are not comparable), but facts still apply.
+            db = None
     cutoff = config.inject_max_distance()
     cross = config.inject_cross_distance()
     session = payload.get("session_id") or ""
