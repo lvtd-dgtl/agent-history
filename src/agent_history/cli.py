@@ -1043,9 +1043,9 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
 
     try:
         if args.command == "index":
-            return index.run()
+            return index.run_exclusive()
         if args.command == "reindex":
-            return index.run(reindex=True, force=args.force)
+            return index.run_exclusive(reindex=True, force=args.force)
         if args.command == "reembed":
             return index.run_reembed()
         if args.command == "sources":

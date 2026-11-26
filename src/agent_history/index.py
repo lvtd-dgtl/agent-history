@@ -241,7 +241,30 @@ def _release_consumed(active: list) -> None:
             release()
 
 
+def run_exclusive(reindex: bool = False, force: bool = False) -> int:
+    """`index` and `reindex` from the command line: `run`, holding the lock.
+
+    `trigger`, `sync`, `import` and `reembed` all take the indexing lock;
+    without it here, a hook-triggered run that starts meanwhile reads the same
+    set of indexed hashes, embeds the same new records and fails on
+    ``chunks.content_hash`` — or, during a reindex, writes into a store that
+    is being reset. With the lock held, hooks no-op (their 5-second timeout)
+    and catch up afterwards. `run` itself stays lock-free: `trigger` calls it
+    while already holding the lock.
+    """
+    from . import trigger
+
+    with trigger._exclusive(config.lock_path()) as acquired:
+        if not acquired:
+            print("another indexing run holds the lock; retry shortly",
+                  file=sys.stderr)
+            return 1
+        return run(reindex=reindex, force=force)
+
+
 def run(reindex: bool = False, force: bool = False) -> int:
+    """Index new records. The caller holds the indexing lock (see
+    `run_exclusive`)."""
     if reindex:
         from . import backup
 
