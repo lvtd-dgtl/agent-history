@@ -11,6 +11,8 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+## [0.20.1] — 2026-11-26
+
 ### Fixed
 - A ship-only machine (no local index) now makes its upgrade backup too:
   `ship`, `ship-jobs` and `sync` check the version stamp before their first
