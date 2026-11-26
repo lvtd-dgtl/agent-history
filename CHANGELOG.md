@@ -11,6 +11,15 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+### Fixed
+- `agent-history index` and `reindex` now take the indexing lock, as
+  `trigger`, `sync`, `import` and `reembed` already do. Run by hand while a
+  hook-triggered run was indexing, both read the same set of indexed hashes
+  and embedded the same new records, and the second to insert failed with
+  `UNIQUE constraint failed: chunks.content_hash`; a `reindex` could reset the
+  store under a running hook. With another run holding the lock, they now
+  exit with "another indexing run holds the lock; retry shortly".
+
 ## [0.20.1] — 2026-11-26
 
 ### Fixed
