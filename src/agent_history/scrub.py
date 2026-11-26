@@ -88,6 +88,13 @@ def _run_locked(yes: bool) -> int:
               f"(re-embeds up to {len(targets)} chunk(s) via Ollama)")
         return 0
 
+    from . import backup
+
+    with backup.guarded("scrub", erases=True):
+        return _rewrite(targets)
+
+
+def _rewrite(targets: list) -> int:
     try:
         db, _dimension = store.open_for_write()  # model must match: we embed
     except store.StoreError as exc:

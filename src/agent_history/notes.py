@@ -440,7 +440,7 @@ def _connect(path: Path) -> tuple[sqlite3.Connection, bool]:
     try:
         return store._raw_connect(path), True
     except store.StoreError:
-        return sqlite3.connect(path), False
+        return sqlite3.connect(path, timeout=store.BUSY_TIMEOUT), False
 
 
 def open_store(write: bool) -> tuple[sqlite3.Connection, bool]:
@@ -453,7 +453,10 @@ def open_store(write: bool) -> tuple[sqlite3.Connection, bool]:
             return db, False
         db, vec = _connect(path)
     else:
+        from . import backup
+
         config.ensure_data_home()
+        backup.guard_upgrade()
         db, vec = _connect(path)
         config.secure_file(path)
         db.executescript(_SCHEMA)
@@ -1307,35 +1310,44 @@ def migrate_records(apply: bool = False) -> int:
             return 0
         if not plans:
             return 0
-        ndb, vectors = open_store(write=True)
-        stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = config.data_home() / f"migrate-records-{stamp}.jsonl"
-        moved = 0
-        try:
-            for origin, chunks, note, machine, _clean_join in plans:
-                try:
-                    insert(ndb, note, machine, vectors)
-                except embed.EmbedError:
-                    insert(ndb, note, machine, False)   # text search still works
-                ndb.commit()
-                if not ndb.execute("SELECT 1 FROM notes WHERE note_id = ?",
-                                   (note["note_id"],)).fetchone():
-                    print(f"migrate-records: {origin}: note not readable; chunks kept",
-                          file=sys.stderr)
-                    continue
-                fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-                with os.fdopen(fd, "a", encoding="utf-8") as fh:
-                    for cid, corigin, sid, ts, text, cmachine in chunks:
-                        fh.write(json.dumps({"id": cid, "origin": corigin, "session_id": sid,
-                                             "timestamp": ts, "machine": cmachine,
-                                             "text": text}, ensure_ascii=False) + "\n")
-                store._delete_rows(db, [(c[0], c[4]) for c in chunks])
-                db.commit()
-                moved += 1
-        finally:
-            ndb.close()
-        print(f"migrate-records: moved {moved} record(s) into notes; rollback copy of "
-              f"the removed chunks: {backup}")
-        return 0 if moved == len(plans) else 1
+        from . import backup as backups
+
+        with backups.guarded("notes migrate-records", touches=("index.db", "notes.db")):
+            return _move_records(db, plans)
     finally:
         db.close()
+
+
+def _move_records(db, plans: list) -> int:
+    from . import store
+
+    ndb, vectors = open_store(write=True)
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = config.data_home() / f"migrate-records-{stamp}.jsonl"
+    moved = 0
+    try:
+        for origin, chunks, note, machine, _clean_join in plans:
+            try:
+                insert(ndb, note, machine, vectors)
+            except embed.EmbedError:
+                insert(ndb, note, machine, False)   # text search still works
+            ndb.commit()
+            if not ndb.execute("SELECT 1 FROM notes WHERE note_id = ?",
+                               (note["note_id"],)).fetchone():
+                print(f"migrate-records: {origin}: note not readable; chunks kept",
+                      file=sys.stderr)
+                continue
+            fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                for cid, corigin, sid, ts, text, cmachine in chunks:
+                    fh.write(json.dumps({"id": cid, "origin": corigin, "session_id": sid,
+                                         "timestamp": ts, "machine": cmachine,
+                                         "text": text}, ensure_ascii=False) + "\n")
+            store._delete_rows(db, [(c[0], c[4]) for c in chunks])
+            db.commit()
+            moved += 1
+    finally:
+        ndb.close()
+    print(f"migrate-records: moved {moved} record(s) into notes; rollback copy of "
+          f"the removed chunks: {backup}")
+    return 0 if moved == len(plans) else 1

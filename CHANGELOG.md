@@ -11,7 +11,34 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+## [0.20.0] — 2026-11-25
+
+Time-aware recall, curated facts, search narrowing, and a backup before
+every write that could lose history.
+
 ### Added
+- **Backups before every risky write, and an integrity check.** The first
+  write by a new version (a schema upgrade) and every command that deletes or
+  rewrites rows (`reindex`, `reembed`, `purge`, `scrub`, `relabel`, `notes
+  migrate-records`, `fact forget`) first copy every store in the data home
+  with SQLite's backup API, plus the token file and the not-yet-shipped
+  outboxes. Each backup's `manifest.json` records sizes, SHA-256, `PRAGMA
+  integrity_check` and per-table row counts; the copy is renamed into place
+  only when whole. The operation runs only if the backup succeeded (no free
+  space, no change), and is followed by a check of the live data that names
+  the backup to restore if it fails. `agent-history backup` makes one by hand
+  and has `list`, `check` (corruption, chunks vs full-text vs vectors, and
+  any table with fewer rows than a backup; `--no-loss` makes that fatal),
+  `verify`, `restore` (backs up what it replaces first; leaves the token file
+  alone) and `delete`; `--tenant`/`--all-tenants` on a hub. A damaged store
+  is copied and flagged rather than blocking the rest. Kept per data home:
+  the last five backups made before operations (`AGENT_HISTORY_BACKUP_KEEP`),
+  the last two made before upgrades, and hand-made ones until deleted.
+  `AGENT_HISTORY_BACKUP_DIR` puts them on another disk and
+  `AGENT_HISTORY_AUTO_BACKUP=0` turns the automatic ones off.
+- Writers wait up to five minutes for another connection's lock (was five
+  seconds), so a backup in progress delays an index run instead of failing
+  it.
 - **Search narrowing**: `--subagents include|exclude|only` (a subagent's user
   chunks are its parent's brief), `--role` (repeatable or comma-separated),
   `--min-chars`, `--agent a,b` lists and `--exclude-agent`, and
@@ -73,8 +100,11 @@ they have no corresponding tags.
   they cannot be opened read-only in place.
 
 ### Changed
-- `fact` and `eval` are subcommands now, so a bare query starting with
-  either word (`agent-history fact check auth`) needs `search` or quotes.
+- `purge`, `scrub` and `fact forget` keep a backup of what they remove (see
+  above); delete it to erase the data everywhere, or run with
+  `AGENT_HISTORY_AUTO_BACKUP=0`.
+- `backup`, `fact` and `eval` are subcommands now, so a bare query starting with
+  one of them (`agent-history fact check auth`) needs `search` or quotes.
 - The README names the cost of verbatim recall — stale statements come back
   too — and what the time axis does and does not do about it (#14).
 

@@ -99,8 +99,10 @@ class State:
     def open(cls, writable: bool) -> "State":
         path = config.ship_state_path()
         if writable:
+            from .store import BUSY_TIMEOUT
+
             config.ensure_data_home()
-            db = sqlite3.connect(path)
+            db = sqlite3.connect(path, timeout=BUSY_TIMEOUT)
             config.secure_file(path)
             db.executescript(_SCHEMA)
             return cls(db, True)

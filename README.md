@@ -588,6 +588,63 @@ Three commands follow from this, in order of how often you should use them:
   requires `--force` to proceed. There is almost never a reason to: model
   changes have `reembed`.
 
+## Backups and integrity checks
+
+Because the index is often the only copy, **every store is backed up before
+anything that could lose rows**, automatically:
+
+- the **first write by a new version** of agent-history (an upgrade that
+  migrates the schema, or simply writes differently);
+- every command that **deletes or rewrites rows**: `reindex`, `reembed`,
+  `purge`, `scrub`, `relabel`, `notes migrate-records`, `fact forget`.
+
+A backup copies every SQLite store in the data home (`index.db`,
+`notes.db`, `facts.db`, `ship.db`, …) with SQLite's backup API, so it is a
+consistent moment even while a hook or the hub's indexer is writing, plus
+the token file and any batches still waiting to ship. Its `manifest.json`
+records each file's size, SHA-256, `PRAGMA integrity_check` result and the
+row count of every table. It is written under a temporary name and renamed
+into place only when complete.
+
+**If the backup cannot be made, the operation does not run** — no free
+space means no purge, and a new version does not touch an index it could not
+copy first. After the operation, the live data is checked; if that fails,
+the message names the backup to restore.
+
+```console
+$ agent-history backup                         # one now (kept until you delete it)
+$ agent-history backup list
+$ agent-history backup check                   # live data vs the latest backup
+$ agent-history backup check --no-loss         # ...and fail if any table shrank
+$ agent-history backup verify latest           # the backup itself is intact
+$ agent-history backup restore <name> --yes    # backs up what it replaces first
+$ agent-history backup create --all-tenants    # every tenant on a hub
+```
+
+`check` looks for corruption (`PRAGMA integrity_check`, and FTS5's own
+check of the full-text index), for the index's three views of the chunks
+(rows, full-text entries, vectors) disagreeing, and for any table with fewer
+rows than the backup recorded. Fewer rows is reported, and fatal with
+`--no-loss` — the check to run after an upgrade, when nothing should have
+been removed.
+
+A store whose copy fails the integrity check is still kept, flagged in the
+manifest with a warning: a damaged copy beats none, and one bad store never
+stops the others being saved. While a store is copied (seconds: about 3 s for
+400 MB), other processes keep reading it and their writes wait for it.
+`restore` puts back the stores and any queued batches that are missing now,
+but not the token file, which would revive revoked tokens; it stays in the
+backup if you need it.
+
+Backups live in `<data home>/backups/` (`AGENT_HISTORY_BACKUP_DIR` puts them
+on another disk, in a folder per data home). The newest five made before an
+operation (`AGENT_HISTORY_BACKUP_KEEP`) and the newest two made before an
+upgrade are kept; ones you make by hand stay until you delete them. Only a
+version newer than any that wrote before makes an upgrade backup, so an
+older install sharing the data home does not. A backup is the same disk as the index unless you move it: it guards
+against a bad command or a bad upgrade, not a dead drive — copy
+`backups/` off the machine for that.
+
 ## Deleting on purpose: `purge`
 
 `reindex --force` is a sledgehammer; `purge` is a scalpel — permanent,
@@ -612,6 +669,11 @@ full-text indexes too. One caveat from content-hash dedup: identical text is
 stored once, attributed to its first-indexed source — so a surgical purge
 matches that stored attribution, and `--all` is the only guaranteed-complete
 wipe.
+
+**Backups keep what `purge` removes.** Like every deleting command, it backs
+up first and then names that backup. To erase the data everywhere, delete
+that backup and any older ones (`agent-history backup delete <name> --yes`),
+or run the purge with `AGENT_HISTORY_AUTO_BACKUP=0`.
 
 ## Regulated work: `strict` mode
 
@@ -1346,6 +1408,9 @@ is no daemon, no server, and no separate process to keep alive.
 | `AGENT_HISTORY_INJECT_MAX_AGE` | – | Never inject an excerpt older than this span, e.g. `365d` |
 | `AGENT_HISTORY_INJECT_RECENCY` | – | Order injection candidates by relevance x recency with this half-life, e.g. `90d` |
 | `AGENT_HISTORY_SUPERSEDE_HINTS` | on | `0` turns off the "possibly superseded" hints everywhere |
+| `AGENT_HISTORY_AUTO_BACKUP` | on | `0` skips the automatic backups (see [Backups](#backups-and-integrity-checks)); the operation then runs without one |
+| `AGENT_HISTORY_BACKUP_DIR` | `$AGENT_HISTORY_HOME/backups` | Where backups go; each data home (tenant) gets its own folder there |
+| `AGENT_HISTORY_BACKUP_KEEP` | `5` | Backups made before operations kept per data home (plus the last two made before upgrades); hand-made ones are never pruned |
 | `AGENT_HISTORY_STRICT` | – | `1` enables the compliance profile (injection off + hard project-scoped) |
 | `AGENT_HISTORY_REDACT` | off (on under strict) | `on` replaces secrets with typed markers at ingest; `off` forces verbatim even under strict. Never applies to `ship` (always redacts) or a hub (always on) |
 | `AGENT_HISTORY_MACHINE` | short hostname | This machine's name in a shared index |
@@ -1442,6 +1507,11 @@ The posture that follows:
   rows (SQLite `secure_delete`, so they do not linger in free pages) and any
   copy still queued for the hub; a copy the hub already holds is deleted
   there.
+- **Backups hold everything the stores hold**, at `0700`/`0600` like the
+  stores. `purge`, `scrub` and `fact forget` back up first, so what they
+  remove survives in that backup (and older ones) until you delete it with
+  `agent-history backup delete <name> --yes`; set
+  `AGENT_HISTORY_AUTO_BACKUP=0` when the point is erasure.
 - **Encryption at rest is the disk's job.** Neither `index.db`, `notes.db`
   nor `facts.db` is encrypted by the tool. On a laptop that means full-disk
   encryption; on a hub holding other people's history it means an encrypted

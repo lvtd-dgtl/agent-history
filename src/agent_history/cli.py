@@ -14,7 +14,8 @@ COMMANDS = {"index", "reindex", "reembed", "search", "sources", "doctor",
             "datadir", "trigger", "show", "sessions", "serve", "inject", "docs",
             "purge", "strict", "scrub", "relabel", "ship", "ship-jobs", "confirm-indexed",
             "boat-export",
-            "serve-ssh", "mcp", "import", "notes", "sync", "notify", "fact", "eval"}
+            "serve-ssh", "mcp", "import", "notes", "sync", "notify", "fact", "eval",
+            "backup"}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -335,6 +336,45 @@ def _build_parser() -> argparse.ArgumentParser:
     fct_sub.add_parser("ship", help="upload queued facts to the hub")
     fct_sub.add_parser("index", help="hub: store facts waiting in the inbox")
 
+    bak = sub.add_parser(
+        "backup", help="back up every store; check the live data against a backup",
+        description="Backups are made automatically before a new version first "
+                    "writes and before any command that deletes or rewrites rows. "
+                    "With no action, makes one now.")
+    bak_sub = bak.add_subparsers(dest="backup_action")
+    for name, text in (("create", "make a backup now (never pruned automatically)"),
+                       ("list", "list this data home's backups"),
+                       ("check", "check the live stores and compare with a backup"),
+                       ("verify", "check that a backup's files are intact"),
+                       ("restore", "put a backup's stores back in place"),
+                       ("delete", "delete one backup")):
+        action = bak_sub.add_parser(name, help=text)
+        target = action.add_mutually_exclusive_group()
+        target.add_argument("--tenant", help="one hub tenant's data home")
+        if name in ("create", "list", "check"):
+            target.add_argument("--all-tenants", action="store_true",
+                                help="every tenant under $AGENT_HISTORY_TENANTS")
+        if name == "create":
+            action.add_argument("--label", help="a short name for this backup")
+        if name in ("verify", "restore", "delete"):
+            action.add_argument("name", nargs="?" if name == "verify" else None,
+                                default="latest", help="backup directory name, path "
+                                                       "or 'latest'")
+        if name in ("restore", "delete"):
+            action.add_argument("--yes", action="store_true",
+                                help="do it; without it, only says what would happen")
+        if name == "check":
+            action.add_argument("--against", default="latest",
+                                help="backup to compare with (default: latest; "
+                                     "'none' for no comparison)")
+            action.add_argument("--quick", action="store_true",
+                                help="PRAGMA quick_check, no full-text check")
+            action.add_argument("--no-loss", action="store_true",
+                                help="fail when any table has fewer rows than "
+                                     "the backup")
+        if name in ("list", "check"):
+            action.add_argument("--json", dest="as_json", action="store_true")
+
     evl = sub.add_parser(
         "eval", help="measure retrieval: hit@1, recall@k and MRR over a file "
                      "of queries with known answers")
@@ -601,6 +641,130 @@ def _cmd_docs(action: str, path: str | None) -> int:
     return 0
 
 
+def _backup_errors() -> tuple:
+    from . import backup
+    return (backup.BackupError, backup.IntegrityError)
+
+
+def _each_home(args):
+    """The data homes a backup command covers: this one, one tenant, or all."""
+    if getattr(args, "tenant", None):
+        if not config.tenant_dir(args.tenant).is_dir():  # also validates the name
+            raise ValueError(f"no tenant {args.tenant!r} under {config.tenants_root()}")
+        yield args.tenant
+        return
+    if getattr(args, "all_tenants", False):
+        root = config.tenants_root()
+        names = sorted(p.name for p in root.iterdir()
+                       if p.is_dir() and config.valid_tenant(p.name)) if root.is_dir() else []
+        if not names:
+            raise ValueError(f"no tenants under {root}")
+        yield from names
+        return
+    yield None
+
+
+def _cmd_backup(args) -> int:
+    import contextlib
+    import json
+
+    from . import backup
+
+    action = args.backup_action or "create"
+    code = 0
+    try:
+        homes = list(_each_home(args))
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    for tenant in homes:
+        scope = config.tenant_home(tenant) if tenant else contextlib.nullcontext()
+        with scope:
+            if len(homes) > 1 or tenant:
+                print(f"== {tenant or 'this machine'}  ({config.data_home()})")
+            try:
+                code = max(code, _backup_one(args, action, backup, json))
+            except backup.BackupError as exc:
+                # One tenant's trouble must not stop the others.
+                print(f"error: {exc}", file=sys.stderr)
+                code = 1
+    return code
+
+
+def _backup_one(args, action: str, backup, json) -> int:
+    if action == "create":
+        made = backup.snapshot("manual", kind="manual", label=getattr(args, "label", None))
+        if made is None:
+            print(f"nothing to back up in {config.data_home()}")
+            return 0
+        manifest = backup.read_manifest(made)
+        for name, entry in manifest["files"].items():
+            print(f"  {name:18} {entry['bytes'] / 2**20:8.1f} MB  integrity "
+                  f"{entry['integrity']}")
+        print(f"backup: {made}")
+        return 0
+    if action == "list":
+        found = backup.backups()
+        if args.as_json:
+            print(json.dumps([{"path": str(p), **m} for p, m in found], indent=2))
+            return 0
+        if not found:
+            print(f"no backups in {backup.root()}")
+        for path, manifest in found:
+            size = sum(e.get("bytes", 0) for e in manifest.get("files", {}).values())
+            kind = "manual" if manifest.get("manual") else "auto"
+            print(f"{path.name:52} {kind:6} {size / 2**20:8.1f} MB  "
+                  f"v{manifest.get('version')}  {manifest.get('reason')}")
+        return 0
+    if action == "check":
+        against = None if args.against == "none" else args.against
+        report = backup.check(against=against, quick=args.quick)
+        if args.as_json:
+            print(json.dumps({**report.as_dict(), "ok": report.ok(args.no_loss)}, indent=2))
+        else:
+            backup.print_report(report, no_loss=args.no_loss)
+        return 0 if report.ok(args.no_loss) else 1
+    path = backup.resolve(args.name)
+    if action == "verify":
+        problems = backup.verify(path)
+        for name in backup.damaged(backup.read_manifest(path)):
+            print(f"note: {name} was already damaged when backed up (kept as it was)")
+        for line in problems:
+            print(f"PROBLEM: {line}")
+        print(f"{path.name}: {'intact' if not problems else 'DAMAGED'}")
+        return 0 if not problems else 1
+    if action == "delete":
+        if not args.yes:
+            print(f"would delete backup {path}. re-run with --yes to do it.")
+            return 0
+        import shutil
+        shutil.rmtree(path)
+        print(f"deleted {path}")
+        return 0
+    if action == "restore":
+        manifest = backup.read_manifest(path)
+        if not args.yes:
+            bad = backup.damaged(manifest)
+            good = [name for name in manifest["files"] if name not in bad]
+            print(f"would restore {', '.join(good) or 'nothing'} from {path.name} "
+                  f"(made {manifest.get('created')}, v{manifest.get('version')}), after "
+                  "backing up what is there now. re-run with --yes to do it.")
+            for name in bad:
+                print(f"would skip {name}: its copy was damaged when backed up, so the "
+                      "live one is left as it is.")
+            if backup.TOKEN_FILE in manifest.get("extras", []):
+                print(f"the token file is not restored (it would revive revoked "
+                      f"tokens); it is in {path / backup.TOKEN_FILE} if needed.")
+            return 0
+        before = backup.restore(path)
+        if before:
+            print(f"backup of the replaced data: {before}")
+        report = backup.check(against=path)
+        backup.print_report(report)
+        return 0 if report.ok(no_loss=True) else 1
+    return 1
+
+
 def _cmd_purge(args) -> int:
     tenant = getattr(args, "tenant", None)
     if tenant:
@@ -647,8 +811,14 @@ def _cmd_purge(args) -> int:
         print(f"would delete {len(rows)} chunk(s) ({target}).")
         print("this is permanent and cannot be undone. re-run with --yes to do it.")
         return 0
-    removed = store.purge(db, rows)
-    print(f"purged {removed} chunk(s) — permanently deleted from the index.")
+    if not rows:
+        print("purged 0 chunk(s): nothing matched.")
+        return 0
+    from . import backup
+
+    with backup.guarded("purge", erases=True):
+        removed = store.purge(db, rows)
+    print(f"purged {removed} chunk(s) — deleted from the index.")
     return 0
 
 
@@ -995,11 +1165,21 @@ def dispatch(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
         if args.command == "relabel":
             from . import relabel
             return relabel.run(apply=args.apply)
+        if args.command == "backup":
+            return _cmd_backup(args)
 
         if args.command == "import":
             return _cmd_import(args.kind, args.path, dry_run=args.dry_run)
     except (store.StoreError, embed.EmbedError) as exc:
         print(f"error: {exc}", file=sys.stderr)
+        return 1
+    except _backup_errors() as exc:
+        from . import backup
+        if isinstance(exc, backup.BackupError):
+            print(f"error: backup failed, so nothing was changed: {exc}\n"
+                  "  (AGENT_HISTORY_AUTO_BACKUP=0 runs without one)", file=sys.stderr)
+        else:
+            print(f"error: {exc}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:
         print("\ninterrupted", file=sys.stderr)
