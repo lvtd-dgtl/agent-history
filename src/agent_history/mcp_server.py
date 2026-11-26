@@ -150,15 +150,13 @@ def _record_as_hit(note: dict) -> dict:
             "excerpt": _clip(note.get("text") or note.get("excerpt") or "", EXCERPT_CHARS)}
 
 
-def _merge_records(results: list[dict], records: list[dict], k: int) -> list[dict]:
+def _merge_records(results: list[dict], records: list[dict]) -> list[dict]:
     """Interleave transcript hits and record notes by rank (each list scores
     1/(60+rank), transcripts first on a tie), dropping a record that is still
-    in the transcript index too, and re-number the ranks. Facts lead, above
-    the k others, as they do in search."""
+    in the transcript index too. The caller keeps facts out of it (they
+    lead, above the k others, as in search), cuts to k and numbers the ranks."""
     if not records:
         return results
-    leading = [r for r in results if r.get("role") == facts.ROLE]
-    results = [r for r in results if r.get("role") != facts.ROLE]
     seen = {(r["session_id"], r["excerpt"][:120]) for r in results}
     scored = [(1.0 / (60 + i), 0, i, r) for i, r in enumerate(results)]
     for i, note in enumerate(records):
@@ -167,8 +165,45 @@ def _merge_records(results: list[dict], records: list[dict], k: int) -> list[dic
             continue
         scored.append((1.0 / (60 + i), 1, i, hit))
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
-    merged = leading + [hit for _, _, _, hit in scored[:k]]
-    return [{**hit, "rank": rank} for rank, hit in enumerate(merged, 1)]
+    return [hit for _, _, _, hit in scored]
+
+
+def _record_hits(query: str, *, k: int, mode: str, cwd: str | None,
+                 machine: str | None, window, per_session: int | None,
+                 min_chars: int) -> list[dict]:
+    """history_record notes for a recall: the best k that pass ``min_chars``
+    and the per-session cap. Those two drop records after the search, so
+    when they remove some, ask again deeper — as transcripts are — until k
+    pass or the records run out."""
+    want = k
+    while True:
+        found = notes_store.search(query, k=want, mode=mode, records=True, cwd=cwd,
+                                   machine=machine, window=window)
+        kept = found
+        if min_chars:
+            kept = [note for note in kept
+                    if len(note.get("text") or note.get("excerpt") or "") >= min_chars]
+        if per_session:
+            kept = _cap_sessions(kept, per_session, lambda note: note.get("record_session"))
+        if len(kept) >= k or len(found) < want or want >= _RECORDS_MAX:
+            return kept[:k]
+        want = min(want * 4, _RECORDS_MAX)
+
+
+_RECORDS_MAX = 1024  # records asked for at most, however narrow the filters
+
+
+def _cap_sessions(hits: list[dict], n: int, session) -> list[dict]:
+    """At most ``n`` hits per conversation, in order. A hit with no session
+    of its own counts alone rather than sharing one empty key."""
+    seen: Counter = Counter()
+    kept = []
+    for index, hit in enumerate(hits):
+        key = session(hit) or ("", index)
+        if seen[key] < n:
+            seen[key] += 1
+            kept.append(hit)
+    return kept
 
 
 def _require(identity: Identity | None, scope: str) -> Identity:
@@ -186,8 +221,18 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
            cwd: str | None = None, machine: str | None = None,
            mode: str = "hybrid", sort: str = "relevance",
            notes: str = "exclude", since: str | None = None,
-           until: str | None = None, recency: str | None = None) -> dict:
+           until: str | None = None, recency: str | None = None,
+           role: list[str] | None = None, exclude_agent: list[str] | None = None,
+           subagents: str = "include", min_chars: int = 0,
+           per_session: int | None = None) -> dict:
     identity = _require(identity, "read")
+    if subagents not in store.SUBAGENT_MODES:
+        raise ToolFailure(f"subagents must be one of {', '.join(store.SUBAGENT_MODES)}")
+    if per_session is not None and int(per_session) < 1:
+        raise ToolFailure("per_session must be at least 1")
+    narrowing = dict(roles=role or None, exclude_agent=exclude_agent or None,
+                     subagents=subagents, min_chars=max(0, int(min_chars or 0)),
+                     per_session=int(per_session) if per_session else None)
     try:
         window, half_life = search.time_options(since or None, until or None,
                                                 None, recency or None)
@@ -210,15 +255,23 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
 
     note_hits: list[dict] = []
     record_hits: list[dict] = []
-    wanted = agent or surface
+    # "a,b" is a list; "," or " " names no agent and narrows nothing.
+    wanted = store.agent_set(agent or surface)
     with _tenant_index(identity.tenant):
         # history_record entries live in the notes store now (piece D). The
-        # default recall still returns them, in the shape they always had.
-        if notes == "exclude" and (not wanted or wanted == SURFACE):
+        # default recall still returns them, in the shape they always had —
+        # unless a role or subagent filter rules a record out.
+        records_fit = ((not role or RECORD_ROLE in search.make_filters(roles=role).roles)
+                       and subagents != "only"
+                       and SURFACE not in search.make_filters(
+                           exclude_agent=exclude_agent).exclude_agents)
+        if (notes == "exclude" and records_fit
+                and (not wanted or SURFACE in wanted)):
             try:
-                record_hits = notes_store.search(query, k=k, mode=mode, records=True,
-                                                 cwd=cwd or None, machine=machine or None,
-                                                 window=window)
+                record_hits = _record_hits(query, k=k, mode=mode, cwd=cwd or None,
+                                           machine=machine or None, window=window,
+                                           per_session=narrowing["per_session"],
+                                           min_chars=narrowing["min_chars"])
             except embed.EmbedError as exc:
                 raise ToolFailure(f"embedding unavailable ({exc}); "
                                   "retry with mode='text'") from None
@@ -232,16 +285,17 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             rows: list[dict] = []
         elif not config.db_path().exists():
             # No transcript index for this tenant yet; curated facts still answer.
-            wanted_agent = (agent or surface) or None
             rows = (search.search_rows(query, k=k, agent=facts.AGENT, window=window,
-                                       cwd=cwd or None, machine=machine or None)
-                    if wanted_agent in (None, facts.AGENT) and sort == "relevance" else [])
+                                       cwd=cwd or None, machine=machine or None,
+                                       **narrowing)
+                    if (not wanted or facts.AGENT in wanted)
+                    and sort == "relevance" else [])
         else:
             try:
                 rows = search.search_rows(
-                    query, k=k, cwd=cwd or None, agent=(agent or surface) or None,
+                    query, k=k, cwd=cwd or None, agent=",".join(sorted(wanted)) or None,
                     machine=machine or None, mode=mode, sort=sort,
-                    window=window, recency=half_life)
+                    window=window, recency=half_life, **narrowing)
             except store.StoreError as exc:
                 raise ToolFailure(str(exc)) from None
             except embed.EmbedError as exc:
@@ -282,7 +336,19 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             **extra,
         })
     if notes == "exclude":
-        merged = _merge_records(results, record_hits, k)
+        # Facts lead, above the k other hits, as in search; records of a chat
+        # share its session, so a per-session cap covers them too. Records are
+        # capped before merging and the merged list after, then cut to k:
+        # capping a cut list would leave it short with nothing to refill it.
+        per = narrowing["per_session"]
+        leading = [hit for hit in results if hit["role"] == facts.ROLE]
+        merged = _merge_records([hit for hit in results if hit["role"] != facts.ROLE],
+                                record_hits)
+        if per:
+            merged = _cap_sessions(merged, per,
+                                   lambda hit: hit.get("session") or hit.get("session_id"))
+        merged = [{**hit, "rank": rank}
+                  for rank, hit in enumerate(leading + merged[:k], 1)]
         return {"query": query, "mode": mode, "count": len(merged),
                 "results": merged}
     # Notes first (a note is a pointer to read), then transcript hits.

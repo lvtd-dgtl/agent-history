@@ -64,7 +64,13 @@ def build_server(gate: Gate) -> MCPServer:
             "a half-life such as 30d that leans results toward recent ones "
             "(off by default). Curated facts the query names come first "
             "(role fact). A hit with a warning field may be out of date: a "
-            "newer hit states a different host, address, key or version."),
+            "newer hit states a different host, address, key or version. "
+            "Narrowing: agent may be a comma list; exclude_agent; role (e.g. "
+            "['assistant'] for answers, ['memory','doc'] for curated notes); "
+            "subagents: include (default), exclude (drops briefs a parent "
+            "agent wrote to its subagents) or only; min_chars skips short "
+            "chunks; per_session caps hits per conversation (2 gives more "
+            "distinct conversations)."),
         annotations=ToolAnnotations(title="Recall from history", read_only_hint=True,
                                     open_world_hint=False),
         structured_output=False,
@@ -83,10 +89,17 @@ def build_server(gate: Gate) -> MCPServer:
         since: str | None = None,
         until: str | None = None,
         recency: str | None = None,
+        role: list[str] | None = None,
+        exclude_agent: list[str] | None = None,
+        subagents: Literal["include", "exclude", "only"] = "include",
+        min_chars: int = 0,
+        per_session: int | None = None,
     ) -> str:
         return run("history_recall", ctx, recall, query, k=k, agent=agent, surface=surface,
                    cwd=cwd, machine=machine, mode=mode, sort=sort, notes=notes,
-                   since=since, until=until, recency=recency)
+                   since=since, until=until, recency=recency, role=role,
+                   exclude_agent=exclude_agent, subagents=subagents,
+                   min_chars=min_chars, per_session=per_session)
 
     @server.tool(
         name="history_show",

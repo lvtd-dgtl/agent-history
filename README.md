@@ -179,6 +179,11 @@ $ agent-history search "query" -k 20        # more results
 $ agent-history search "query" --full       # full chunk text, not a preview
 $ agent-history search "query" --cwd myapp  # only sessions from a directory
 $ agent-history search "query" --agent codex   # one source only
+$ agent-history search "query" --agent claude-code,codex --exclude-agent docs
+$ agent-history search "query" --subagents exclude  # skip subagent transcripts
+$ agent-history search "query" --role assistant     # answers, not prompts
+$ agent-history search "query" --per-session 1      # one hit per conversation
+$ agent-history search "query" --min-chars 120      # skip one-line chunks
 $ agent-history search "query" --mode text  # exact match, no Ollama needed
 $ agent-history search "query" --mode vector   # embeddings only
 $ agent-history search "query" --sort newest   # chronological, not relevance
@@ -220,6 +225,29 @@ $ agent-history sources                     # what will be scanned
 $ agent-history doctor                      # diagnose the installation
 $ agent-history doctor --coverage           # on disk vs indexed, torn transcripts
 ```
+
+### Narrowing a search
+
+Every chunk carries its agent, role, conversation, and whether it came from a
+subagent, so a search can be narrowed on any of them. All of these are off
+by default and combine freely, locally and on a hub:
+
+| Option | Keeps | Why |
+|---|---|---|
+| `--agent a,b` / `--exclude-agent x` | chunks from those agents / without that one | a dozen sources now; `docs` and `claude-ai` imports can crowd out transcripts |
+| `--role user,assistant,…` | those roles: `user`, `assistant`, `memory`, `doc`, `title`, `attachment`, `instructions`, `summary`, `fact` | `assistant` for what was answered or decided, `memory,doc` for what was written down, `user` for "what did I ask" |
+| `--subagents exclude` / `only` | the main conversations / subagent transcripts alone | a subagent's `user` chunks are the brief its parent wrote, so they echo your own instructions back; on one real hub they were 19% of hits |
+| `--min-chars N` | chunks of at least N characters | short prompts ("ssh into fleet") match semantically and say little |
+| `--per-session N` | at most N hits per conversation | one long session can fill most of a result list; with `1`, `-k 8` means eight conversations |
+
+Curated facts follow the same filters: `--role assistant`, `--subagents only`
+or `--exclude-agent fact` leave them out, and `--agent fact,codex` asks for
+both. `--min-chars` is the exception: a fact is short by design, and the
+floor is there to drop one-line prompts. `--per-session` chooses the k hits
+in relevance order and then sorts them as asked, fetching deeper only when
+the cap removed something. With a hub, an `--agent` list is asked one agent
+at a time, so a hub older than agent lists still answers it. To try one as a default before adopting it, run it through
+[`eval`](#measuring-search-quality-eval), which takes the same options.
 
 A search hit is a chunk; `show` prints the conversation it came from.
 Relevance ranking has a mild recency preference: results whose scores are
@@ -873,7 +901,9 @@ the optional extra: `uv tool install 'agent-history[mcp]'`.
 | `history_fact_get` | read | Optional `subject`, `predicate`, `as_of`, `history`. The value in force (with what it replaced), every fact in force, or the full timeline. |
 
 `history_recall` also takes `since`, `until` (as of) and `recency` (a
-half-life), puts matching facts first (`role: fact`, with a `fact` object),
+half-life), the [narrowing options](#narrowing-a-search) (`role`,
+`exclude_agent`, `subagents`, `min_chars`, `per_session`; `agent` may be a
+comma list), puts matching facts first (`role: fact`, with a `fact` object),
 and gives a hit that a newer hit appears to replace a `superseded_hint` and a
 one-line `warning`.
 
@@ -1175,7 +1205,11 @@ hybrid+rec30d     ...
 `session` / `agent` / `file` that must all match, or a list of either (any
 one counts). A query may carry `cwd`, `agent`, `since` and `until`.
 `--details` prints each query's rank per configuration; `--json` the whole
-report. Queries run against this machine's index and go nowhere else; on a
+report. The [narrowing options](#narrowing-a-search) (`--subagents`,
+`--per-session`, `--role`, `--min-chars`, `--exclude-agent`) apply to every
+configuration, so `eval q.jsonl` and `eval q.jsonl --subagents exclude
+--per-session 2` side by side show whether a filter earns a place as a
+default. Queries run against this machine's index and go nowhere else; on a
 hub, run it as the hub user inside a tenant's data home.
 
 ## Architecture

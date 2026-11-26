@@ -604,3 +604,11 @@ def test_a_time_window_reaches_past_a_pool_of_newer_notes(fake_embed):
     (hit,) = notes.search("deploy plan", k=1, mode="text", window=window)
     assert hit["note_id"] == old["note_id"], "the in-window note is found past 40 newer ones"
     assert len(notes.search("deploy plan", k=3, mode="text")) == 3
+
+
+@needs_ext
+def test_a_deep_hybrid_search_stays_within_the_vector_limit(fake_embed):
+    notes.save(notes.build(title="quorum plan", summary="quorum plan for the hub",
+                           source=code_source()))
+    (hit,) = notes.search("quorum plan", k=1024, mode="hybrid")
+    assert hit["title"] == "quorum plan"

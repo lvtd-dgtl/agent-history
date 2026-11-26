@@ -12,6 +12,19 @@ they have no corresponding tags.
 ## [Unreleased]
 
 ### Added
+- **Search narrowing**: `--subagents include|exclude|only` (a subagent's user
+  chunks are its parent's brief), `--role` (repeatable or comma-separated),
+  `--min-chars`, `--agent a,b` lists and `--exclude-agent`, and
+  `--per-session N` to keep one conversation from filling the list. Off by
+  default; forwarded to the hub only when used; also in `history_recall`
+  (`role`, `exclude_agent`, `subagents`, `min_chars`, `per_session`), the
+  viewer (subagents, per session) and `eval`, so a filter can be measured
+  before it becomes a default. Facts follow the role, agent and subagent
+  filters; `--min-chars` leaves them alone, since a fact is short by design.
+  `--per-session` picks hits in relevance order and looks deeper only when
+  it dropped some, so a cap that never binds changes nothing. A hub is
+  asked an `--agent` list one agent at a time, so an older hub still
+  answers it.
 - **Time-aware search** (#40 phase 1). `search` takes `--since`, `--until`
   and `--as-of` (an age like `30d`, `today`, a date, or an ISO time; a bare
   date as an upper bound covers the whole day), and `--as-of` never returns a

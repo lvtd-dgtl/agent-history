@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
@@ -16,6 +17,42 @@ from .sessions import link_alias, resolve_session  # noqa: F401
 
 class StoreError(RuntimeError):
     pass
+
+
+SUBAGENT_MODES = ("include", "exclude", "only")
+
+
+@dataclass(frozen=True)
+class Filters:
+    """Narrowing on a row's own columns, beyond directory, agent, machine and
+    time: agents to leave out, roles to keep, subagent chunks, and a length
+    floor. Empty (falsy) means no narrowing at all."""
+
+    exclude_agents: frozenset = frozenset()
+    roles: frozenset = frozenset()          # empty: every role
+    subagents: str = "include"              # include | exclude | only
+    min_chars: int = 0
+
+    def __bool__(self) -> bool:
+        return bool(self.exclude_agents or self.roles or self.min_chars
+                    or self.subagents != "include")
+
+    def keep(self, row: tuple) -> bool:
+        if self.exclude_agents and row[0] in self.exclude_agents:
+            return False
+        if self.roles and (row[5] or "") not in self.roles:
+            return False
+        if self.subagents != "include":
+            # A subagent chunk: flagged sidechain, or labelled with its agent id.
+            sub = bool(row[11]) or bool(row[9])
+            if sub != (self.subagents == "only"):
+                return False
+        return not self.min_chars or len(row[6] or "") >= self.min_chars
+
+
+def agent_set(agent: str | None) -> set[str]:
+    """``--agent`` values: one name or a comma-separated list."""
+    return {a.strip() for a in (agent or "").split(",") if a.strip()}
 
 
 EXTENSION_HELP = (
@@ -419,14 +456,15 @@ def query(
     machine: str | None = None,
     exclude_machine: Iterable[str] | None = None,
     window: timeaxis.Window | None = None,
+    filters: Filters | None = None,
 ) -> list[tuple]:
     """Nearest neighbours, optionally narrowed by cwd substring, agent,
-    machine or time window. Rows are (*_ROW_COLS, distance).
+    machine, time window or row filters. Rows are (*_ROW_COLS, distance).
 
     Filters are applied after the vector search, so we over-fetch when one is
     present to avoid returning fewer than k results.
     """
-    fetch = _fetch(k, cwd, agent, machine, exclude_machine, window)
+    fetch = _fetch(k, cwd, agent, machine, exclude_machine, window, filters)
     rows = db.execute(
         f"SELECT {_ROW_COLS}, v.distance "
         "FROM vec_chunks v JOIN chunks c ON c.id = v.rowid "
@@ -436,7 +474,8 @@ def query(
     ).fetchall()
 
     return _filter(rows, cwd=cwd, agent=agent, machine=machine,
-                   exclude_machine=exclude_machine, window=window)[:k]
+                   exclude_machine=exclude_machine, window=window,
+                   filters=filters)[:k]
 
 
 # Column 9 is the chunk's session uid, already canonicalised: a uid merged
@@ -451,7 +490,8 @@ ROW_WIDTH = 12  # columns in _ROW_COLS; a ranking value, if any, follows
 _VEC_K_MAX = 4096  # sqlite-vec's cap on k
 
 
-def _fetch(k: int, cwd, agent, machine, exclude_machine, window=None) -> int:
+def _fetch(k: int, cwd, agent, machine, exclude_machine, window=None,
+           filters=None) -> int:
     """How many candidates to pull before the post-filters trim them.
 
     A machine filter can discard most of the nearest neighbours (a hub's
@@ -460,7 +500,7 @@ def _fetch(k: int, cwd, agent, machine, exclude_machine, window=None) -> int:
     the others. sqlite-vec scans every vector whatever k is, so a deep fetch
     costs little more than a shallow one.
     """
-    if window:
+    if window or filters:
         return _VEC_K_MAX
     if machine or exclude_machine:
         return min(k * 16, _VEC_K_MAX)
@@ -496,6 +536,7 @@ def text_query(
     machine: str | None = None,
     exclude_machine: Iterable[str] | None = None,
     window: timeaxis.Window | None = None,
+    filters: Filters | None = None,
 ) -> list[tuple]:
     """BM25-ranked full-text matches, same row shape as query() minus distance.
 
@@ -514,9 +555,10 @@ def text_query(
     terms = _TOKEN.findall(query)
     if not terms:
         return []
-    fetch = _fetch(k, cwd, agent, machine, exclude_machine, window)
+    fetch = _fetch(k, cwd, agent, machine, exclude_machine, window, filters)
     narrowing = {"cwd": cwd, "agent": agent, "machine": machine,
-                 "exclude_machine": exclude_machine, "window": window}
+                 "exclude_machine": exclude_machine, "window": window,
+                 "filters": filters}
 
     hits = _match(db, " ".join(map(_quote, terms)), fetch, **narrowing)
     if len(hits) < k:
@@ -533,7 +575,8 @@ def text_query(
 def _match(db: sqlite3.Connection, match: str, limit: int, *,
            cwd: str | None, agent: str | None, machine: str | None,
            exclude_machine: Iterable[str] | None,
-           window: timeaxis.Window | None = None) -> dict[int, tuple]:
+           window: timeaxis.Window | None = None,
+           filters: Filters | None = None) -> dict[int, tuple]:
     """Filtered FTS rows keyed by chunk id, best BM25 first."""
     try:
         rows = db.execute(
@@ -546,7 +589,8 @@ def _match(db: sqlite3.Connection, match: str, limit: int, *,
         return {}
     return {row[0]: row[1:] for row in rows
             if _filter([row[1:]], cwd=cwd, agent=agent, machine=machine,
-                       exclude_machine=exclude_machine, window=window)}
+                       exclude_machine=exclude_machine, window=window,
+                       filters=filters)}
 
 
 def hybrid_query(
@@ -560,6 +604,7 @@ def hybrid_query(
     machine: str | None = None,
     exclude_machine: Iterable[str] | None = None,
     window: timeaxis.Window | None = None,
+    filters: Filters | None = None,
 ) -> list[tuple]:
     """Merge vector and full-text rankings with reciprocal rank fusion.
 
@@ -573,7 +618,8 @@ def hybrid_query(
     """
     pool = max(k * 10, 50)
     narrowing = {"cwd": cwd, "agent": agent, "machine": machine,
-                 "exclude_machine": exclude_machine, "window": window}
+                 "exclude_machine": exclude_machine, "window": window,
+                 "filters": filters}
     vec_rows = query(db, vector, pool, **narrowing)
     txt_rows = text_query(db, query_text, pool, **narrowing)
 
@@ -595,11 +641,15 @@ def hybrid_query(
 def _filter(rows: list[tuple], *, cwd: str | None, agent: str | None,
             machine: str | None = None,
             exclude_machine: Iterable[str] | None = None,
-            window: timeaxis.Window | None = None) -> list[tuple]:
+            window: timeaxis.Window | None = None,
+            filters: Filters | None = None) -> list[tuple]:
     if window:
         rows = [r for r in rows if window.contains(r[4])]
-    if agent:
-        rows = [r for r in rows if r[0] == agent]
+    if filters:
+        rows = [r for r in rows if filters.keep(r)]
+    wanted = agent_set(agent)
+    if wanted:  # "," names no agent, so it narrows nothing
+        rows = [r for r in rows if r[0] in wanted]
     if cwd:
         rows = [r for r in rows if cwd in (r[3] or "")]
     # A NULL machine is a chunk indexed here before provenance existed.

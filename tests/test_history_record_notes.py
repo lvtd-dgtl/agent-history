@@ -278,3 +278,61 @@ def test_facts_stay_above_k_when_records_match(hub):  # noqa: F811
     assert roles[0] == "fact" and len(roles) == 2, \
         "the fact rides above the k=1 hit rather than taking its place"
     assert [h["rank"] for h in found["results"]] == [1, 2]
+
+
+# ------------------------------------------------- per-session cap, min_chars
+
+def test_per_session_fills_k_when_one_chat_has_many_records(hub):  # noqa: F811
+    for n in range(3):
+        data(write(hub, title=f"vault rotation record {n}",
+                   summary=f"vault rotation plan, detail number {n}"))
+    index_hub(hub)
+    with config.tenant_home("kim"):
+        db, _ = store.open_for_write()
+        for n in range(5):
+            put(db, f"vault rotation plan, conversation {n}", session=f"sess-vault-{n}")
+        db.commit()
+        db.close()
+    q = {"query": "vault rotation plan", "mode": "text", "k": 4}
+    plain = data(read(hub, "history_recall", q))
+    assert sum(h["role"] == "summary" for h in plain["results"]) >= 2, \
+        "uncapped, one chat's records take several places"
+    capped = data(read(hub, "history_recall", {**q, "per_session": 1}))
+    found = [h["session"] or h["session_id"] for h in capped["results"]]
+    assert capped["count"] == 4 and len(set(found)) == 4
+    assert [h["rank"] for h in capped["results"]] == [1, 2, 3, 4]
+
+
+def test_min_chars_applies_to_records(hub):  # noqa: F811
+    data(write(hub, title="vault rotation record", summary="vault rotation plan, short"))
+    index_hub(hub)
+    q = {"query": "vault rotation plan", "mode": "text"}
+    assert any(h["role"] == "summary" for h in data(read(hub, "history_recall", q))["results"])
+    long_only = data(read(hub, "history_recall", {**q, "min_chars": 2000}))["results"]
+    assert long_only and all(h["role"] != "summary" for h in long_only)
+
+
+def test_records_fill_k_from_more_chats_when_the_cap_binds(hub):  # noqa: F811
+    # One chat with many matching records, then three other chats.
+    for n in range(6):
+        data(write(hub, title=f"quorum plan record {n}",
+                   summary=f"quorum plan quorum plan, detail number {n}"))
+    for n in range(3):
+        data(write(hub, title=f"quorum plan, chat {n}", summary="quorum plan",
+                   chat_url=f"https://claude.ai/chat/0b5e1d4c-1111-4222-8333-44445555{n:04d}"))
+    index_hub(hub)
+    found = data(read(hub, "history_recall", {"query": "quorum", "mode": "text",
+                                              "k": 4, "per_session": 1}))
+    chats = [h["session"] for h in found["results"] if h["role"] == "summary"]
+    assert len(chats) == 4 and len(set(chats)) == 4, \
+        "the cap reaches past one chat's records to the others"
+
+
+def test_an_empty_agent_list_keeps_records(hub):  # noqa: F811
+    out = data(write(hub))
+    index_hub(hub)
+    q = {"query": "hub MCP design scoped tokens", "mode": "text"}
+    plain = data(read(hub, "history_recall", q))["results"]
+    empty = data(read(hub, "history_recall", {**q, "agent": ","}))["results"]
+    assert any(h["session_id"] == out["session"] for h in empty)
+    assert [h["session_id"] for h in empty] == [h["session_id"] for h in plain]

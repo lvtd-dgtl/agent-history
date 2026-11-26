@@ -102,6 +102,13 @@ PAGE = """<!doctype html>
            style="flex:0 1 7rem">
     <input id="recency" placeholder="half-life" aria-label="recency half-life"
            style="flex:0 1 6rem">
+    <select id="subagents" aria-label="subagent transcripts">
+      <option value="include">with subagents</option>
+      <option value="exclude">no subagents</option>
+      <option value="only">subagents only</option>
+    </select>
+    <input id="per_session" placeholder="per session" aria-label="hits per session"
+           style="flex:0 1 6rem">
     <button>search</button>
   </form>
   <div id="status"></div>
@@ -130,8 +137,9 @@ $('f').addEventListener('submit', async ev => {
                                       sort: $('sort').value, k: '20'});
   if ($('agent').value) params.set('agent', $('agent').value);
   if ($('cwd').value) params.set('cwd', $('cwd').value);
-  for (const name of ['since', 'until', 'recency'])
+  for (const name of ['since', 'until', 'recency', 'per_session'])
     if ($(name).value.trim()) params.set(name, $(name).value.trim());
+  if ($('subagents').value !== 'include') params.set('subagents', $('subagents').value);
   try {
     const res = await fetch('/api/search?' + params);
     if (!res.ok) throw new Error(await res.text());
@@ -230,6 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                 except timeaxis.TimeError as exc:
                     self._send(400, str(exc).encode("utf-8"), "text/plain; charset=utf-8")
                     return
+                try:
+                    per_session = _positive_param(params, "per_session")
+                    min_chars = _positive_param(params, "min_chars", floor=0) or 0
+                except ValueError as exc:
+                    self._send(400, str(exc).encode("utf-8"), "text/plain; charset=utf-8")
+                    return
                 hits = supersede.annotate(search.search_rows(
                     params.get("q", ""),
                     k=min(int(params.get("k", "20")), 100),
@@ -239,6 +253,12 @@ class Handler(BaseHTTPRequestHandler):
                     sort=params.get("sort", "relevance"),
                     window=window,
                     recency=half_life,
+                    roles=[params["role"]] if params.get("role") else None,
+                    exclude_agent=([params["exclude_agent"]]
+                                   if params.get("exclude_agent") else None),
+                    subagents=params.get("subagents", "include"),
+                    min_chars=min_chars,
+                    per_session=per_session,
                 ))
                 for hit in hits:
                     if hit.get("superseded_hint"):
@@ -269,6 +289,22 @@ class Handler(BaseHTTPRequestHandler):
         # (sandboxed iframes, file:// pages) read access to the index.
         self.end_headers()
         self.wfile.write(body)
+
+
+def _positive_param(params: dict, name: str, *, floor: int = 1) -> int | None:
+    """An optional whole-number query parameter of at least ``floor``;
+    None when it is absent or empty. Raises ValueError with a message fit
+    for a 400 response."""
+    raw = (params.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number, got {raw!r}") from None
+    if value < floor:
+        raise ValueError(f"{name} must be at least {floor}")
+    return value
 
 
 def run(port: int = DEFAULT_PORT) -> int:

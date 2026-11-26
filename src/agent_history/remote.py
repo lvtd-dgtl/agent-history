@@ -64,7 +64,9 @@ def search_args(query: str, *, k: int, cwd: str | None, agent: str | None,
                 machine: str | None, exclude_machine: list[str] | None,
                 mode: str, sort: str, full: bool, as_json: bool,
                 tenant: str | None = None, window=None,
-                recency: float | None = None) -> list[str]:
+                recency: float | None = None, roles: list[str] | None = None,
+                exclude_agent: list[str] | None = None, subagents: str = "include",
+                min_chars: int = 0, per_session: int | None = None) -> list[str]:
     """The ``search`` command line to run on the hub for these options.
 
     A time window travels as absolute UTC instants and a half-life in hours,
@@ -83,6 +85,16 @@ def search_args(query: str, *, k: int, cwd: str | None, agent: str | None,
         out += window.args()
     if recency is not None:
         out += ["--recency", f"{recency / 3600:g}h"]
+    for role in roles or ():
+        out += ["--role", role]
+    for name in exclude_agent or ():
+        out += ["--exclude-agent", name]
+    if subagents != "include":
+        out += ["--subagents", subagents]
+    if min_chars:
+        out += ["--min-chars", str(min_chars)]
+    if per_session:
+        out += ["--per-session", str(per_session)]
     if full:
         out.append("--full")
     if as_json:

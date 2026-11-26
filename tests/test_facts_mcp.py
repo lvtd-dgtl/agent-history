@@ -146,3 +146,23 @@ def test_a_facts_only_tenant_honours_cwd_and_machine(hub):  # noqa: F811
     assert {r["fact"]["value"] for r in data(beta)["results"]} == {"8443"}, \
         "a fact scoped to another project stays out"
     assert data(elsewhere)["results"] == [], "the facts were made on another machine"
+
+
+def test_recall_takes_row_filters_and_a_per_session_cap(hub):  # noqa: F811
+    async def call(client):
+        answers = await client.call_tool("history_recall", {
+            "query": "vault rotation plan", "mode": "text", "role": ["assistant"]})
+        capped = await client.call_tool("history_recall", {
+            "query": "vault rotation plan", "mode": "text", "per_session": 1})
+        none = await client.call_tool("history_recall", {
+            "query": "vault rotation plan", "mode": "text", "subagents": "only"})
+        bad = await client.call_tool("history_recall", {
+            "query": "vault rotation plan", "per_session": 0})
+        return answers, capped, none, bad
+
+    answers, capped, none, bad = run_calls(hub["tokens"]["read"], call)
+    assert {r["role"] for r in data(answers)["results"]} == {"assistant"}
+    rows = data(capped)["results"]
+    assert len({r["session"] for r in rows}) == len(rows)
+    assert data(none)["results"] == [], "the hub fixture has no subagent chunks"
+    assert bad.is_error and "per_session" in text_of(bad)

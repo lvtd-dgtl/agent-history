@@ -113,13 +113,16 @@ def _search(args, scope: list[str]) -> int:
     options = dict(k=args.k, cwd=args.cwd, agent=args.agent,
                    machine=args.machine, exclude_machine=args.exclude_machine,
                    mode=args.mode, sort=args.sort, window=window,
-                   recency=half_life)
+                   recency=half_life, roles=args.roles,
+                   exclude_agent=args.exclude_agent, subagents=args.subagents,
+                   min_chars=args.min_chars, per_session=args.per_session)
     lists = []
     for tenant in scope:
         with config.tenant_home(tenant):
             if not config.db_path().exists():
                 # No transcripts shipped yet; its curated facts still answer.
-                if options["agent"] not in (None, facts.AGENT):
+                agents = store.agent_set(options["agent"])  # "," names none
+                if agents and facts.AGENT not in agents:
                     continue
                 rows = search.search_rows(" ".join(args.query),
                                           **{**options, "agent": facts.AGENT})
@@ -127,7 +130,8 @@ def _search(args, scope: list[str]) -> int:
                 rows = search.search_rows(" ".join(args.query), **options)
         lists.append([{**row, "tenant": tenant} for row in rows])
     results = (lists[0] if len(lists) == 1
-               else search.fuse(lists, sort=args.sort, k=args.k))
+               else search.fuse(lists, sort=args.sort, k=args.k,
+                                per_session=args.per_session))
     return search.emit(results, full=args.full, as_json=args.as_json)
 
 

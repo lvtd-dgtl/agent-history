@@ -123,8 +123,11 @@ def score(ranks: list[int | None], k: int) -> dict:
 
 
 def evaluate(queries: list[dict], *, k: int, mode: str,
-             recency: float | None = None) -> dict:
-    """Run every query in one configuration and score it."""
+             recency: float | None = None, filters: dict | None = None) -> dict:
+    """Run every query in one configuration and score it. ``filters`` are
+    search_rows' row filters (roles, subagents, per_session, ...), applied
+    to every query — the way to try a default before adopting it."""
+    filters = filters or {}
     ranks: list[int | None] = []
     errors = 0
     for q in queries:
@@ -133,7 +136,7 @@ def evaluate(queries: list[dict], *, k: int, mode: str,
             # this scores retrieval over the transcript index.
             hits = search.search_rows(q["query"], k=k, cwd=q["cwd"], agent=q["agent"],
                                       mode=mode, window=q["window"], recency=recency,
-                                      include_facts=False)
+                                      include_facts=False, **filters)
         except embed.EmbedError:
             errors += 1
             ranks.append(None)
@@ -144,7 +147,8 @@ def evaluate(queries: list[dict], *, k: int, mode: str,
 
 
 def run(path: str, *, k: int = 10, mode: str = "hybrid", recency: str | None = None,
-        as_json: bool = False, details: bool = False) -> int:
+        as_json: bool = False, details: bool = False,
+        filters: dict | None = None) -> int:
     try:
         queries = load(path)
         half_life = timeaxis.parse_span(recency) if recency else None
@@ -164,16 +168,21 @@ def run(path: str, *, k: int = 10, mode: str = "hybrid", recency: str | None = N
     configs = [(m, None) for m in modes]
     if half_life is not None:
         configs += [(m, half_life) for m in modes]
-    results = [evaluate(queries, k=k, mode=m, recency=r) for m, r in configs]
+    active = {name: value for name, value in (filters or {}).items()
+              if value and value != "include"}
+    results = [evaluate(queries, k=k, mode=m, recency=r, filters=active)
+               for m, r in configs]
 
     if as_json:
         print(json.dumps({"k": k, "queries": len(queries), "chunks": chunks,
-                          "results": results}, indent=2))
+                          "filters": active, "results": results}, indent=2))
         return 0
 
     print(f"eval: {len(queries)} quer{'y' if len(queries) == 1 else 'ies'}, "
           f"k={k}, index {chunks:,} chunks" if isinstance(chunks, int)
           else f"eval: {len(queries)} queries, k={k}")
+    if active:
+        print("filters: " + ", ".join(f"{name}={value}" for name, value in active.items()))
     label_width = max(len(_label(r, recency)) for r in results)
     print(f"{'config':<{label_width}}  {'hit@1':>6}  {f'recall@{k}':>9}  {'MRR':>6}")
     for r in results:
