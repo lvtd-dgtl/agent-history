@@ -99,9 +99,13 @@ class State:
     def open(cls, writable: bool) -> "State":
         path = config.ship_state_path()
         if writable:
+            from . import backup
             from .store import BUSY_TIMEOUT
 
             config.ensure_data_home()
+            # A ship-only machine has no index: its first write by a new
+            # version is here, and its outbox holds batches not yet sent.
+            backup.guard_upgrade()
             db = sqlite3.connect(path, timeout=BUSY_TIMEOUT)
             config.secure_file(path)
             db.executescript(_SCHEMA)

@@ -502,3 +502,22 @@ def test_restoring_a_backup_without_a_known_writer_clears_the_stamp(indexed, cap
     assert cli.main(["backup", "restore", made.name, "--yes"]) == 0
     assert not (config.data_home() / backup.STAMP).exists()
     capsys.readouterr()
+
+
+def test_a_ship_only_machine_backs_up_before_a_new_version_writes(tmp_path, monkeypatch):
+    from agent_history import ship
+
+    state = ship.State.open(writable=True)
+    state.db.close()
+    (config.data_home() / "outbox").mkdir(exist_ok=True)
+    (config.data_home() / "outbox" / "batch-1.jsonl").write_text("{}\n")
+    assert backup.backups() == [], "a fresh ship.db is stamped, not copied"
+    (config.data_home() / backup.STAMP).write_text("0.19.0\n")
+    state = ship.State.open(writable=True)
+    state.db.close()
+    (made, manifest), = backup.backups()
+    assert "ship.db" in manifest["files"] and "outbox" in manifest["extras"]
+    assert (made / "outbox" / "batch-1.jsonl").exists()
+    dry = ship.State.open(writable=False)
+    dry.db.close()
+    assert len(backup.backups()) == 1, "a dry run writes nothing, so copies nothing"
