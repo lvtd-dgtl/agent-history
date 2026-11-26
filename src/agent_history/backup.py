@@ -54,6 +54,8 @@ from . import __version__, config
 MANIFEST = "manifest.json"
 STAMP = ".written-by"
 PARTIAL = ".partial-"
+IN_USE = ".in-use"          # in a backup an operation still depends on
+IN_USE_HOURS = 24           # after which a pin left by a crash no longer counts
 DEFAULT_KEEP = 5            # backups made before an operation, per data home
 UPGRADE_KEEP = 2            # backups made before a new version's first write
 SPACE_MARGIN = 64 * 2**20   # free space to leave beyond the copy itself
@@ -357,8 +359,10 @@ def _snapshot_unlocked(reason: str, *, kind: str, label: str | None) -> Path | N
                 damaged.append(f"{path.name} ({info['integrity']})")
             entries[path.name] = {**info, "sha256": _sha256(copy)}
         extras = []
-        token = config.data_home() / TOKEN_FILE
-        if token.exists():
+        from .mcp_auth import tokens_path
+
+        token = tokens_path()  # $AGENT_HISTORY_MCP_TOKENS, else the data home's
+        if token.is_file():
             shutil.copy2(token, work / TOKEN_FILE)
             config.secure_file(work / TOKEN_FILE)
             extras.append(TOKEN_FILE)
@@ -374,6 +378,7 @@ def _snapshot_unlocked(reason: str, *, kind: str, label: str | None) -> Path | N
             "version": __version__, "host": socket.gethostname(),
             "data_home": str(config.data_home()), "files": entries, "extras": extras,
             "damaged": damaged,
+            "token_path": str(token) if TOKEN_FILE in extras else None,
         }
         manifest_path = work / MANIFEST
         manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
@@ -398,6 +403,12 @@ def read_manifest(path: Path) -> dict:
         return json.loads((path / MANIFEST).read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise BackupError(f"{path} is not a backup (no readable {MANIFEST}: {exc})") from None
+
+
+def damaged(manifest: dict) -> list[str]:
+    """Stores whose copy was already damaged when the backup was made."""
+    return [name for name, entry in manifest.get("files", {}).items()
+            if entry.get("integrity") != "ok"]
 
 
 def _kind(manifest: dict) -> str:
@@ -443,7 +454,8 @@ def prune() -> list[Path]:
     doomed = []
     for kind, limit in (("operation", keep()), ("upgrade", UPGRADE_KEEP)):
         mine = [path for path, manifest in found if _kind(manifest) == kind]
-        doomed += mine[:-limit] if len(mine) > limit else []
+        doomed += [path for path in (mine[:-limit] if len(mine) > limit else [])
+                   if not _in_use(path)]
     for path in doomed:
         shutil.rmtree(path, ignore_errors=True)
     base = root()
@@ -455,9 +467,20 @@ def prune() -> list[Path]:
     return doomed
 
 
+def _in_use(path: Path) -> bool:
+    """A running operation pinned this backup (see ``guarded``)."""
+    try:
+        age = time.time() - (path / IN_USE).stat().st_mtime
+    except OSError:
+        return False
+    return age < IN_USE_HOURS * 3600
+
+
 def verify(path: Path) -> list[str]:
     """Problems with a backup itself: a file missing, changed since it was
-    written, or failing SQLite's integrity check. Empty when intact."""
+    written, or failing SQLite's integrity check. Empty when intact. A copy
+    that was already damaged when the backup was made (flagged in its
+    manifest) is not a problem of the backup; see ``damaged``."""
     manifest = read_manifest(path)
     problems = []
     for name, entry in manifest.get("files", {}).items():
@@ -468,6 +491,8 @@ def verify(path: Path) -> list[str]:
         if _sha256(copy) != entry.get("sha256"):
             problems.append(f"{name}: changed since the backup was made (SHA-256 differs)")
             continue
+        if entry.get("integrity") != "ok":
+            continue  # damaged when copied, and unchanged since
         try:
             state = describe(copy)["integrity"]
         except sqlite3.DatabaseError as exc:
@@ -517,7 +542,7 @@ def _fulltext_check(path: Path) -> str:
         db.close()
 
 
-def check(*, against: str | Path | None = "latest", quick: bool = False,
+def check(*, against: str | Path | dict | None = "latest", quick: bool = False,
           only: tuple[str, ...] | None = None) -> Report:
     """Check the live stores (``only`` some of them, by file name), and
     compare their row counts with a backup (``latest`` by default; None for
@@ -544,16 +569,16 @@ def check(*, against: str | Path | None = "latest", quick: bool = False,
                 report.add(f"{path.name}:fulltext-check",
                            f"{path.name}: full-text index check failed ({state})")
 
-    baseline = None
-    if against is not None:
+    manifest = against if isinstance(against, dict) else None
+    if manifest is None and against is not None:
         try:
             baseline = against if isinstance(against, Path) else resolve(str(against))
+            manifest = read_manifest(baseline)
         except BackupError:
             if against != "latest":
                 raise
-    if baseline is not None:
-        manifest = read_manifest(baseline)
-        report.against = manifest.get("name") or baseline.name
+    if manifest is not None:
+        report.against = manifest.get("name")
         for name, entry in manifest.get("files", {}).items():
             if only and name not in only:
                 continue
@@ -574,10 +599,10 @@ def check(*, against: str | Path | None = "latest", quick: bool = False,
     return report
 
 
-def _baseline_codes(path: Path) -> set[str]:
+def _baseline_codes(manifest: dict) -> set[str]:
     """Problem codes a backup already had when it was made."""
     codes = set()
-    for name, entry in read_manifest(path).get("files", {}).items():
+    for name, entry in manifest.get("files", {}).items():
         if entry.get("integrity") != "ok":
             codes.add(f"{name}:integrity")
         codes.update(code for code, _ in _view_problems(name, entry.get("views") or {}))
@@ -680,11 +705,28 @@ def guarded(reason: str, *, touches: tuple[str, ...] = ("index.db",),
         yield None
         return
     made = snapshot(reason)
+    manifest = read_manifest(made) if made else None
+    pin = made / IN_USE if made else None
     if made:
         print(f"backup: {made}", file=sys.stderr)
-    yield made
-    report = check(against=made, quick=True, only=touches)
-    known = _baseline_codes(made) if made else set()
+        try:
+            pin.write_text(f"{os.getpid()} {reason}\n", encoding="utf-8")
+        except OSError:
+            pin = None
+    try:
+        yield made
+    except BaseException as exc:
+        if made:
+            print(f"{reason} stopped part-way ({type(exc).__name__}: {exc}). The copy "
+                  f"made just before is {made}; check with `agent-history backup "
+                  f"check`, restore with `agent-history backup restore {made.name} "
+                  "--yes`.", file=sys.stderr)
+        raise
+    finally:
+        if pin is not None:
+            pin.unlink(missing_ok=True)
+    report = check(against=manifest, quick=True, only=touches)
+    known = _baseline_codes(manifest) if manifest else set()
     new = [msg for code, msg in zip(report.codes, report.problems) if code not in known]
     old = [msg for code, msg in zip(report.codes, report.problems) if code in known]
     if new:
@@ -726,7 +768,15 @@ def restore(path: Path) -> Path | None:
                                 label=f"pre-restore-{path.name}") if stores() else None)
             try:
                 home = config.ensure_data_home()
+                bad = damaged(manifest)
                 for name in manifest.get("files", {}):
+                    if name in bad:
+                        # The live store may be better than a copy that was
+                        # damaged when made; leave it, and say so.
+                        print(f"skipped {name}: its copy was damaged when backed up; "
+                              f"the live one is left as it is ({path / name} is "
+                              "there for recovery by hand)", file=sys.stderr)
+                        continue
                     _copy_db(path / name, home / name)
                 for box in OUTBOXES:
                     if box in manifest.get("extras", []) and (path / box).is_dir():

@@ -727,6 +727,8 @@ def _backup_one(args, action: str, backup, json) -> int:
     path = backup.resolve(args.name)
     if action == "verify":
         problems = backup.verify(path)
+        for name in backup.damaged(backup.read_manifest(path)):
+            print(f"note: {name} was already damaged when backed up (kept as it was)")
         for line in problems:
             print(f"PROBLEM: {line}")
         print(f"{path.name}: {'intact' if not problems else 'DAMAGED'}")

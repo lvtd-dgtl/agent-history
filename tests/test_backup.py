@@ -407,3 +407,67 @@ def test_backup_command_errors_are_its_own(indexed, capsys):
     assert "is not a backup" in err and "AUTO_BACKUP" not in err
     assert cli.main(["backup", "check", "--tenant", "nosuch"]) == 1
     assert "no tenant" in capsys.readouterr().err
+
+
+# --- second review --------------------------------------------------------------------------
+
+def _damage(path):
+    db = sqlite3.connect(path)
+    db.execute("CREATE TABLE t (x)")
+    db.executemany("INSERT INTO t VALUES (?)", [("x" * 500,)] * 200)
+    db.commit()
+    db.close()
+    data = bytearray(path.read_bytes())
+    for offset in range(4096, min(len(data), 4096 * 4)):
+        data[offset] = 0xAA
+    path.write_bytes(bytes(data))
+
+
+def test_a_backup_with_a_damaged_store_still_restores_the_healthy_ones(indexed, capsys):
+    _damage(config.data_home() / "ship.db")
+    made = backup.snapshot("manual", kind="manual")
+    assert backup.verify(made) == [], "damaged when copied is not a defect of the backup"
+    assert cli.main(["backup", "verify", made.name]) == 0
+    assert "ship.db was already damaged" in capsys.readouterr().out
+    assert cli.main(["purge", "--session", "doomed", "--yes"]) == 0
+    assert chunks() == 5
+    capsys.readouterr()
+    assert cli.main(["backup", "restore", made.name, "--yes"]) == 1, \
+        "the live ship.db is still damaged, and the check after the restore says so"
+    cap = capsys.readouterr()
+    assert "skipped ship.db" in cap.err and "PROBLEM: ship.db" in cap.out
+    assert chunks() == 8, "the healthy stores came back"
+
+
+def test_a_backup_an_operation_still_needs_is_never_pruned(indexed, monkeypatch, capsys):
+    monkeypatch.setenv("AGENT_HISTORY_BACKUP_KEEP", "1")
+    with backup.guarded("long operation") as made:
+        assert (made / backup.IN_USE).exists()
+        for n in range(3):
+            backup.snapshot(f"another {n}")
+        assert made.exists(), "pinned while the operation runs"
+    assert not (made / backup.IN_USE).exists()
+    assert "integrity: ok" in capsys.readouterr().err
+    backup.snapshot("one more")
+    assert not made.exists(), "prunable again once the operation is done"
+
+
+def test_a_failed_operation_still_names_the_backup(indexed, capsys):
+    with pytest.raises(RuntimeError):
+        with backup.guarded("reindex") as made:
+            raise RuntimeError("ollama went away")
+    err = capsys.readouterr().err
+    assert "reindex stopped part-way" in err and f"backup restore {made.name} --yes" in err
+    assert not (made / backup.IN_USE).exists()
+
+
+def test_a_token_file_kept_elsewhere_is_backed_up(indexed, tmp_path, monkeypatch):
+    from agent_history import mcp_auth
+
+    tokens = tmp_path / "elsewhere" / "tokens.json"
+    monkeypatch.setenv("AGENT_HISTORY_MCP_TOKENS", str(tokens))
+    mcp_auth.add_token("router-read", ["read"], None)
+    made = backup.snapshot("manual", kind="manual")
+    manifest = backup.read_manifest(made)
+    assert manifest["token_path"] == str(tokens)
+    assert (made / backup.TOKEN_FILE).read_text() == tokens.read_text()
