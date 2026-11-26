@@ -11,6 +11,12 @@ they have no corresponding tags.
 
 ## [Unreleased]
 
+### Fixed
+- A ship-only machine (no local index) now makes its upgrade backup too:
+  `ship`, `ship-jobs` and `sync` check the version stamp before their first
+  write to `ship.db`, so `ship.db` and the batches waiting in the outbox are
+  copied before a new version touches them.
+
 ## [0.20.0] — 2026-11-25
 
 Time-aware recall, curated facts, search narrowing, and a backup before
