@@ -79,7 +79,12 @@ def search_rows(
     window = window or timeaxis.Window()
     filters = make_filters(roles=roles, exclude_agent=exclude_agent,
                            subagents=subagents, min_chars=min_chars)
+    if per_session is not None and per_session < 1:
+        raise ValueError("per_session must be at least 1")
     agents = store.agent_set(agent)
+    # Curated facts are exempt from --min-chars: a fact is short by design
+    # ("hub ssh: dennis@10.0.0.5"), and the floor is there to drop one-line
+    # prompts, not the answer itself.
     wants_facts = (include_facts and (not agents or facts.AGENT in agents)
                    and facts.AGENT not in filters.exclude_agents
                    and (not filters.roles or facts.ROLE in filters.roles)
@@ -96,48 +101,67 @@ def search_rows(
         print("note: no transcript index yet; showing curated facts only",
               file=sys.stderr)
         return fact_hits[:k]
-    if agents:
-        agent = ",".join(sorted(agents - {facts.AGENT}))
+    # "a,b" becomes a clean list; "," or " " names no agent at all.
+    agent = ",".join(sorted(agents - {facts.AGENT})) or None
 
     db = store.open_for_read(check_model=(mode != "text"))
     narrowing = {"cwd": cwd, "agent": agent, "machine": machine,
                  "exclude_machine": exclude_machine, "window": window,
                  "filters": filters}
+    fetch = _fetcher(db, query, mode, narrowing)
     reweigh = recency is not None and sort == "relevance"
-    want = k
-    if reweigh or per_session:
-        k = max(k * 4, 40)  # a recent hit, or a fifth session, must be fetched to win
+    anchor = window.until if window.until is not None else time.time()
+    # A recent hit must be fetched before the half-life can lift it.
+    pool = max(k * 4, 40) if reweigh else k
 
-    if mode == "text":
-        rows = [(*r, None, None) for r in store.text_query(db, query, k, **narrowing)]
-    elif mode == "vector":
-        vector = embed.pack(embed.embed(query, timeout=60))
-        rows = [(*r, None) for r in store.query(db, vector, k, **narrowing)]
-    else:
-        if not store.fts_enabled(db):
-            # An index last written by an older version has no FTS table yet;
-            # it appears on the next `agent-history index`.
-            vector = embed.pack(embed.embed(query, timeout=60))
-            rows = [(*r, None) for r in store.query(db, vector, k, **narrowing)]
-        else:
-            try:
-                vector = embed.pack(embed.embed(query, timeout=60))
-            except embed.EmbedError as exc:
-                print(f"note: embedding unavailable ({exc}); "
-                      "full-text results only", file=sys.stderr)
-                rows = [(*r, None, None)
-                        for r in store.text_query(db, query, k, **narrowing)]
-            else:
-                rows = store.hybrid_query(db, vector, query, k, **narrowing)
+    while True:
+        rows = fetch(pool)
+        ranked = _order([_as_dict(row) for row in rows], "relevance")
+        if reweigh:
+            ranked = apply_recency(ranked, recency, anchor)
+        if not per_session:
+            break
+        ranked = cap_per_session(ranked, per_session)
+        # The cap is chosen in relevance order and refilled from deeper
+        # candidates only when it removed something, so a cap that never
+        # binds returns exactly the uncapped list.
+        if len(ranked) >= k or len(rows) < pool or pool >= _POOL_MAX:
+            break
+        pool = min(pool * 4, _POOL_MAX)
 
-    results = _order([_as_dict(row) for row in rows], sort)
-    if reweigh:
-        anchor = window.until if window.until is not None else time.time()
-        results = apply_recency(results, recency, anchor)
-    if per_session:
-        results = cap_per_session(results, per_session)
+    results = ranked[:k]
+    if sort != "relevance":
+        results = _order(results, sort)
     # Facts ride above the k transcript hits rather than taking their places.
-    return fact_hits + results[:want]
+    return fact_hits + results
+
+
+# How deep a per-session cap may look for more conversations: sqlite-vec's
+# limit on one nearest-neighbour query.
+_POOL_MAX = 4096
+
+
+def _fetcher(db, query: str, mode: str, narrowing: dict):
+    """A function returning the ``n`` best rows for this query and mode.
+
+    The query is embedded once, here, so fetching deeper costs only the
+    index lookup. Hybrid falls back to full text, with one note, when the
+    embedding endpoint is down.
+    """
+    if mode == "text":
+        return lambda n: [(*r, None, None) for r in store.text_query(db, query, n, **narrowing)]
+    if mode == "vector" or not store.fts_enabled(db):
+        # An index last written by an older version has no FTS table yet;
+        # it appears on the next `agent-history index`.
+        vector = embed.pack(embed.embed(query, timeout=60))
+        return lambda n: [(*r, None) for r in store.query(db, vector, n, **narrowing)]
+    try:
+        vector = embed.pack(embed.embed(query, timeout=60))
+    except embed.EmbedError as exc:
+        print(f"note: embedding unavailable ({exc}); "
+              "full-text results only", file=sys.stderr)
+        return lambda n: [(*r, None, None) for r in store.text_query(db, query, n, **narrowing)]
+    return lambda n: store.hybrid_query(db, vector, query, n, **narrowing)
 
 
 def make_filters(*, roles: list[str] | None = None,
@@ -161,6 +185,8 @@ def _session_key(result: dict) -> tuple:
 def cap_per_session(results: list[dict], n: int) -> list[dict]:
     """Keep at most ``n`` hits per conversation, in order; facts are exempt.
     One long session otherwise takes most of a result list."""
+    if n < 1:
+        raise ValueError("per_session must be at least 1")
     seen: Counter = Counter()
     out = []
     for result in results:
@@ -301,6 +327,7 @@ def run(
         print("error: --tenant selects an index on a hub; set "
               "AGENT_HISTORY_REMOTE", file=sys.stderr)
         return 1
+    agent = ",".join(sorted(store.agent_set(agent))) or None  # "," names none
     options = dict(k=k, cwd=cwd, agent=agent, machine=machine,
                    exclude_machine=exclude_machine, mode=mode, sort=sort,
                    window=window or timeaxis.Window(), recency=recency,
@@ -308,8 +335,17 @@ def run(
                    min_chars=min_chars, per_session=per_session)
 
     if side == "hub":
-        return remote.passthrough(remote.search_args(
-            query, full=full, as_json=as_json, tenant=tenant, **options))
+        if len(store.agent_set(agent)) < 2:
+            return remote.passthrough(remote.search_args(
+                query, full=full, as_json=as_json, tenant=tenant, **options))
+        # An agent list is asked one agent at a time (see _hub_results), so
+        # the hub's answers are merged and printed here.
+        try:
+            hub = _hub_results(query, full=full, tenant=tenant, **options)
+        except remote.RemoteError as exc:
+            print(f"error: hub search failed: {exc}", file=sys.stderr)
+            return 1
+        return emit(hub, full=full, as_json=as_json)
 
     results = search_rows(query, **options)
     if side == "both":
@@ -367,16 +403,33 @@ def _merge_hub(query: str, local: list[dict], *, full: bool, k: int,
     """
     skip = [*(exclude_machine or ()), config.machine_id()]
     try:
-        hub = remote.query_json(remote.search_args(
-            query, k=k, exclude_machine=skip, sort=sort, full=full,
-            as_json=True, tenant=tenant, **options))
+        hub = _hub_results(query, k=k, exclude_machine=skip, sort=sort, full=full,
+                           tenant=tenant, **options)
     except remote.RemoteError as exc:
         print(f"warning: hub unavailable ({exc}); showing local results only",
               file=sys.stderr)
         return local
 
-    return fuse([local, [_with_profile({**_HUB_DEFAULTS, **r}) for r in hub]],
-                sort=sort, k=k, per_session=options.get("per_session"))
+    return fuse([local, hub], sort=sort, k=k, per_session=options.get("per_session"))
+
+
+def _hub_results(query: str, *, agent: str | None, k: int, sort: str,
+                 per_session: int | None = None, **options) -> list[dict]:
+    """The hub's JSON answer for this search, as result dicts.
+
+    A hub older than agent lists reads ``--agent a,b`` as one agent named
+    "a,b" and matches nothing, without an error. So a list is asked one
+    agent at a time, which every hub understands, and the answers are fused
+    by rank. Raises remote.RemoteError.
+    """
+    agents = sorted(store.agent_set(agent)) or [None]
+    lists = [[_with_profile({**_HUB_DEFAULTS, **row}) for row in remote.query_json(
+                 remote.search_args(query, agent=name, k=k, sort=sort,
+                                    per_session=per_session, as_json=True, **options))]
+             for name in agents]
+    if len(lists) == 1:
+        return lists[0]
+    return fuse(lists, sort=sort, k=k, per_session=per_session)
 
 
 def _with_profile(result: dict) -> dict:

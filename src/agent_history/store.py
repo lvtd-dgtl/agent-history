@@ -647,8 +647,8 @@ def _filter(rows: list[tuple], *, cwd: str | None, agent: str | None,
         rows = [r for r in rows if window.contains(r[4])]
     if filters:
         rows = [r for r in rows if filters.keep(r)]
-    if agent:
-        wanted = agent_set(agent)
+    wanted = agent_set(agent)
+    if wanted:  # "," names no agent, so it narrows nothing
         rows = [r for r in rows if r[0] in wanted]
     if cwd:
         rows = [r for r in rows if cwd in (r[3] or "")]

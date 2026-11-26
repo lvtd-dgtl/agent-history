@@ -242,7 +242,11 @@ by default and combine freely, locally and on a hub:
 
 Curated facts follow the same filters: `--role assistant`, `--subagents only`
 or `--exclude-agent fact` leave them out, and `--agent fact,codex` asks for
-both. To try one as a default before adopting it, run it through
+both. `--min-chars` is the exception: a fact is short by design, and the
+floor is there to drop one-line prompts. `--per-session` chooses the k hits
+in relevance order and then sorts them as asked, fetching deeper only when
+the cap removed something. With a hub, an `--agent` list is asked one agent
+at a time, so a hub older than agent lists still answers it. To try one as a default before adopting it, run it through
 [`eval`](#measuring-search-quality-eval), which takes the same options.
 
 A search hit is a chunk; `show` prints the conversation it came from.

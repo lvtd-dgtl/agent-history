@@ -150,15 +150,13 @@ def _record_as_hit(note: dict) -> dict:
             "excerpt": _clip(note.get("text") or note.get("excerpt") or "", EXCERPT_CHARS)}
 
 
-def _merge_records(results: list[dict], records: list[dict], k: int) -> list[dict]:
+def _merge_records(results: list[dict], records: list[dict]) -> list[dict]:
     """Interleave transcript hits and record notes by rank (each list scores
     1/(60+rank), transcripts first on a tie), dropping a record that is still
-    in the transcript index too, and re-number the ranks. Facts lead, above
-    the k others, as they do in search."""
+    in the transcript index too. The caller keeps facts out of it (they
+    lead, above the k others, as in search), cuts to k and numbers the ranks."""
     if not records:
         return results
-    leading = [r for r in results if r.get("role") == facts.ROLE]
-    results = [r for r in results if r.get("role") != facts.ROLE]
     seen = {(r["session_id"], r["excerpt"][:120]) for r in results}
     scored = [(1.0 / (60 + i), 0, i, r) for i, r in enumerate(results)]
     for i, note in enumerate(records):
@@ -167,8 +165,20 @@ def _merge_records(results: list[dict], records: list[dict], k: int) -> list[dic
             continue
         scored.append((1.0 / (60 + i), 1, i, hit))
     scored.sort(key=lambda t: (-t[0], t[1], t[2]))
-    merged = leading + [hit for _, _, _, hit in scored[:k]]
-    return [{**hit, "rank": rank} for rank, hit in enumerate(merged, 1)]
+    return [hit for _, _, _, hit in scored]
+
+
+def _cap_sessions(hits: list[dict], n: int, session) -> list[dict]:
+    """At most ``n`` hits per conversation, in order. A hit with no session
+    of its own counts alone rather than sharing one empty key."""
+    seen: Counter = Counter()
+    kept = []
+    for index, hit in enumerate(hits):
+        key = session(hit) or ("", index)
+        if seen[key] < n:
+            seen[key] += 1
+            kept.append(hit)
+    return kept
 
 
 def _require(identity: Identity | None, scope: str) -> Identity:
@@ -300,16 +310,26 @@ def recall(identity: Identity | None, query: str, *, k: int = DEFAULT_K,
             **extra,
         })
     if notes == "exclude":
-        merged = _merge_records(results, record_hits, k)
-        if narrowing["per_session"]:
-            # Records of one chat share a session; cap them with the rest.
-            seen: Counter = Counter()
-            capped = []
-            for hit in merged:
-                seen[hit.get("session") or hit.get("session_id")] += 1
-                if seen[hit.get("session") or hit.get("session_id")] <= narrowing["per_session"]:
-                    capped.append(hit)
-            merged = [{**hit, "rank": rank} for rank, hit in enumerate(capped, 1)]
+        # Facts lead, above the k other hits, as in search; records of a chat
+        # share its session, so a per-session cap covers them too. Records are
+        # capped before merging and the merged list after, then cut to k:
+        # capping a cut list would leave it short with nothing to refill it.
+        per = narrowing["per_session"]
+        floor = narrowing["min_chars"]
+        if floor:
+            record_hits = [note for note in record_hits
+                           if len(note.get("text") or note.get("excerpt") or "") >= floor]
+        if per:
+            record_hits = _cap_sessions(record_hits, per,
+                                        lambda note: note.get("record_session"))
+        leading = [hit for hit in results if hit["role"] == facts.ROLE]
+        merged = _merge_records([hit for hit in results if hit["role"] != facts.ROLE],
+                                record_hits)
+        if per:
+            merged = _cap_sessions(merged, per,
+                                   lambda hit: hit.get("session") or hit.get("session_id"))
+        merged = [{**hit, "rank": rank}
+                  for rank, hit in enumerate(leading + merged[:k], 1)]
         return {"query": query, "mode": mode, "count": len(merged),
                 "results": merged}
     # Notes first (a note is a pointer to read), then transcript hits.

@@ -278,3 +278,35 @@ def test_facts_stay_above_k_when_records_match(hub):  # noqa: F811
     assert roles[0] == "fact" and len(roles) == 2, \
         "the fact rides above the k=1 hit rather than taking its place"
     assert [h["rank"] for h in found["results"]] == [1, 2]
+
+
+# ------------------------------------------------- per-session cap, min_chars
+
+def test_per_session_fills_k_when_one_chat_has_many_records(hub):  # noqa: F811
+    for n in range(3):
+        data(write(hub, title=f"vault rotation record {n}",
+                   summary=f"vault rotation plan, detail number {n}"))
+    index_hub(hub)
+    with config.tenant_home("kim"):
+        db, _ = store.open_for_write()
+        for n in range(5):
+            put(db, f"vault rotation plan, conversation {n}", session=f"sess-vault-{n}")
+        db.commit()
+        db.close()
+    q = {"query": "vault rotation plan", "mode": "text", "k": 4}
+    plain = data(read(hub, "history_recall", q))
+    assert sum(h["role"] == "summary" for h in plain["results"]) >= 2, \
+        "uncapped, one chat's records take several places"
+    capped = data(read(hub, "history_recall", {**q, "per_session": 1}))
+    found = [h["session"] or h["session_id"] for h in capped["results"]]
+    assert capped["count"] == 4 and len(set(found)) == 4
+    assert [h["rank"] for h in capped["results"]] == [1, 2, 3, 4]
+
+
+def test_min_chars_applies_to_records(hub):  # noqa: F811
+    data(write(hub, title="vault rotation record", summary="vault rotation plan, short"))
+    index_hub(hub)
+    q = {"query": "vault rotation plan", "mode": "text"}
+    assert any(h["role"] == "summary" for h in data(read(hub, "history_recall", q))["results"])
+    long_only = data(read(hub, "history_recall", {**q, "min_chars": 2000}))["results"]
+    assert long_only and all(h["role"] != "summary" for h in long_only)

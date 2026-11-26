@@ -238,6 +238,12 @@ class Handler(BaseHTTPRequestHandler):
                 except timeaxis.TimeError as exc:
                     self._send(400, str(exc).encode("utf-8"), "text/plain; charset=utf-8")
                     return
+                try:
+                    per_session = _positive_param(params, "per_session")
+                    min_chars = _positive_param(params, "min_chars", floor=0) or 0
+                except ValueError as exc:
+                    self._send(400, str(exc).encode("utf-8"), "text/plain; charset=utf-8")
+                    return
                 hits = supersede.annotate(search.search_rows(
                     params.get("q", ""),
                     k=min(int(params.get("k", "20")), 100),
@@ -251,8 +257,8 @@ class Handler(BaseHTTPRequestHandler):
                     exclude_agent=([params["exclude_agent"]]
                                    if params.get("exclude_agent") else None),
                     subagents=params.get("subagents", "include"),
-                    min_chars=int(params.get("min_chars", "0") or 0),
-                    per_session=int(params["per_session"]) if params.get("per_session") else None,
+                    min_chars=min_chars,
+                    per_session=per_session,
                 ))
                 for hit in hits:
                     if hit.get("superseded_hint"):
@@ -283,6 +289,22 @@ class Handler(BaseHTTPRequestHandler):
         # (sandboxed iframes, file:// pages) read access to the index.
         self.end_headers()
         self.wfile.write(body)
+
+
+def _positive_param(params: dict, name: str, *, floor: int = 1) -> int | None:
+    """An optional whole-number query parameter of at least ``floor``;
+    None when it is absent or empty. Raises ValueError with a message fit
+    for a 400 response."""
+    raw = (params.get(name) or "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"{name} must be a whole number, got {raw!r}") from None
+    if value < floor:
+        raise ValueError(f"{name} must be at least {floor}")
+    return value
 
 
 def run(port: int = DEFAULT_PORT) -> int:
